@@ -1,7 +1,9 @@
 #include "SharedPtr.h"
 #include <windows.h>
+#ifdef STDOUT_SYSCALL_DEBUG
 #include <stdio.h>
 #include <tchar.h>
+#endif
 
 void _SharedMutex_init(SharedMutex *mptr, void **privateMutexHandle, const int createNew) {
   if (createNew != 0) {
@@ -11,9 +13,11 @@ void _SharedMutex_init(SharedMutex *mptr, void **privateMutexHandle, const int c
     ( NULL    // default security attributes
     , FALSE   // initially not owned
     , mptr->mutexName );
+#ifdef STDOUT_SYSCALL_DEBUG
   if (*privateMutexHandle == NULL) {
     _tprintf(TEXT("CreateMutex error: %d\n"), GetLastError());
   }
+#endif
 }
 
 void _SharedMutex_destroy(SharedMutex *mptr, void **privateMutexHandle) {
@@ -23,7 +27,10 @@ void _SharedMutex_destroy(SharedMutex *mptr, void **privateMutexHandle) {
 int _SharedMutex_lock(SharedMutex *mptr, void **privateMutexHandle) {
   DWORD r = WaitForSingleObject(*privateMutexHandle, INFINITE);
   if (r != WAIT_OBJECT_0) {
+#ifdef STDOUT_SYSCALL_DEBUG
     _tprintf(TEXT("WaitForSingleObject mutex error: return %d; error code %d.\n"), r, GetLastError());
+#endif
+    return 1;
   } else {
     return 0;
   }
@@ -32,10 +39,12 @@ int _SharedMutex_lock(SharedMutex *mptr, void **privateMutexHandle) {
 int _SharedMutex_unlock(SharedMutex *mptr, void **privateMutexHandle) {
   DWORD r = ReleaseMutex(*privateMutexHandle);
   if(r == 0) {
+#ifdef STDOUT_SYSCALL_DEBUG
     _tprintf(TEXT("ReleaseMutex error: %d\n"), GetLastError());
-	return 1;
+#endif
+	  return 1;
   } else {
-	return 0;
+	  return 0;
   }
 }
 
@@ -50,7 +59,9 @@ HsPtr _store_alloc(const char *memBlockName, void **privateMutexHandle, size_t s
     , memBlockName);             // name of mapping object
 
   if (*privateMutexHandle == NULL) {
+#ifdef STDOUT_SYSCALL_DEBUG
     _tprintf(TEXT("Could not create file mapping object (%d).\n"), GetLastError());
+#endif
     return NULL;
   }
   void *rptr = MapViewOfFile
@@ -61,7 +72,9 @@ HsPtr _store_alloc(const char *memBlockName, void **privateMutexHandle, size_t s
     , size);
 
   if (rptr == NULL) {
-	_tprintf(TEXT("Could not map view of file (%d).\n"), GetLastError());
+#ifdef STDOUT_SYSCALL_DEBUG
+	  _tprintf(TEXT("Could not map view of file (%d).\n"), GetLastError());
+#endif
     CloseHandle(*privateMutexHandle);
     return NULL;
   }

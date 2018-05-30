@@ -1,0 +1,49 @@
+name:                interprocess
+version:             0.1.0.0
+synopsis:            Shared memory and control structures for IPC
+description:         Provides portable shared memory allocator and semaphores.
+                     Can be used for interprocess communication.
+                     Refer to README.md for further information.
+homepage:            https://github.com/achirkin/interprocess
+license:             BSD3
+license-file:        LICENSE
+author:              Artem Chirkin
+maintainer:          chirkin@arch.ethz.ch
+copyright:           (c) 2018 Artem Chirkin
+category:            system
+build-type:          Simple
+cabal-version:       >=1.10
+extra-source-files:
+    README.md
+    src/Foreign/SharedPtr.h
+    src/Foreign/SharedPtrPosix.h
+    src/Foreign/SharedPtrPosix.c
+    src/Foreign/SharedPtrWin32.h
+    src/Foreign/SharedPtrWin32.c
+
+
+library
+    hs-source-dirs:    src
+    exposed-modules:   Foreign.SharedPtr
+                       Foreign.SharedPtr.C
+    build-depends:     base >= 4.7 && < 5
+    default-language:  Haskell2010
+    ghc-options:       -Wall
+    includes:          src/Foreign/SharedPtr.h
+    c-sources:         src/Foreign/SharedPtr.c
+    if os(windows)
+      includes:        src/Foreign/SharedPtrWin32.h
+      c-sources:       src/Foreign/SharedPtrWin32.c
+    else
+      includes:        src/Foreign/SharedPtrPosix.h
+      c-sources:       src/Foreign/SharedPtrPosix.c
+
+
+executable interprocess-concurrent-malloc
+  hs-source-dirs:      app
+  main-is:             Main.hs
+  default-language:    Haskell2010
+  build-depends:       base >= 4.7 && < 5
+                     , typed-process >= 0.2
+                     , interprocess
+  ghc-options:         -threaded -Wall

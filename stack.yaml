@@ -1,0 +1,7 @@
+resolver: lts-9.21
+
+packages:
+  - .
+
+extra-deps:
+  - typed-process-0.2.2.0

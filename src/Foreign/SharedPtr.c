@@ -10,13 +10,9 @@
 
  */
 #include "SharedPtr.h"
-
-#include <assert.h>
-#include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
 #include <string.h>
-
+#include <assert.h>
 
 /* Default store size is at least the page size, which usualy is equal to 4KB.
  */
@@ -107,7 +103,7 @@ typedef struct SharedAllocData {
   AvailableStorage availStorage;
   // Names of mmap-allocated storage chunks,
   // storeNames[0] is the name of storage used to keep SharedAllocData itself
-  StoreName        storeNames[WORD_SIZE_IN_BITS];
+  SharedObjectName storeNames[WORD_SIZE_IN_BITS];
   // How many allocators point to this data? only the last one should unlink an allocated memory.
   HsWord           usersN;
   // Current largest allocated storage chunk
@@ -134,20 +130,10 @@ typedef struct SharedAllocator{
   void            *storePrivateHandles[WORD_SIZE_IN_BITS];
 } SharedAllocator;
 
-
-int _unique_seed = 0;
-void _gen_unique(char *ptr, int added_seed){
-  if(_unique_seed == 0){
-    srand(time(NULL));
-  }
-  sprintf(ptr
-    , "/HsSharedPtr-%08x%08x", rand() ^ 0x19a628f6 ^ added_seed, _unique_seed++);
-}
-
 // returns NULL if failed
 SharedAllocData *_SharedAllocData_init(void **privateStoreHandle, void **mutexPrivateHandle){
-  StoreName stName = { 0 };
-  _gen_unique(stName, 1968293 ^ (int)((HsWord64)&stName));
+  SharedObjectName stName = { 0 };
+  genSharedObjectName(stName);
   SharedAllocData *sdataPtr
     = (SharedAllocData*)_store_alloc(stName, privateStoreHandle, sizeof(SharedAllocData));
   if (sdataPtr == NULL) {
@@ -163,7 +149,7 @@ SharedAllocData *_SharedAllocData_init(void **privateStoreHandle, void **mutexPr
         , .linkF = curNode
         };
   }
-  memcpy(sdataPtr->storeNames[0], stName, sizeof(StoreName));
+  memcpy(sdataPtr->storeNames[0], stName, sizeof(SharedObjectName));
   sdataPtr->largestStoreId = 0;
   _SharedMutex_init(&(sdataPtr->mutex), mutexPrivateHandle, 1);
   return sdataPtr;
@@ -175,8 +161,8 @@ void _SharedAllocData_destroy( SharedAllocData *sdataPtr
                              , const _Bool isLastUser
                              ){
   _SharedMutex_destroy(isLastUser ? &(sdataPtr->mutex) : NULL, mutexPrivateHandle);
-  StoreName myName = {0};
-  memcpy(myName, sdataPtr->storeNames[0], sizeof(StoreName));
+  SharedObjectName myName = {0};
+  memcpy(myName, sdataPtr->storeNames[0], sizeof(SharedObjectName));
   _store_free( myName
              , privateStoreHandle
              , sdataPtr
@@ -316,7 +302,7 @@ int _shared_initStore(SharedAllocator * const aptr, const HsWord8 storeId){
     }
   } else {
     // generate a new unique name for the store
-    _gen_unique( sdataPtr->storeNames[storeId], (int)(((size_t)&aptr) ^ storeSize) );
+    genSharedObjectName( sdataPtr->storeNames[storeId] );
     // allocate store
     storePtr
       = _store_alloc( sdataPtr->storeNames[storeId], &(aptr->storePrivateHandles[storeId]), storeSize );

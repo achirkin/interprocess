@@ -50,7 +50,6 @@ int _SharedMutex_lock(SharedMutex *mptr, void **privateMutexHandle);
 int _SharedMutex_unlock(SharedMutex *mptr, void **privateMutexHandle);
 HsPtr _store_alloc(const char *memBlockName, void **privateStoreHandle, size_t size);
 void _store_free(const char *memBlockName, void **privateStoreHandle, HsPtr addr, size_t size, _Bool unlinkToo);
-// generating unique names for shared objects
-void _gen_unique(char *ptr, int added_seed);
+
 
 #endif /* __HSSHAREDPTR_H__ */

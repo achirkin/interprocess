@@ -7,7 +7,7 @@
 
 void _SharedMutex_init(SharedMutex *mptr, void **privateMutexHandle, const int createNew) {
   if (createNew != 0) {
-    _gen_unique(mptr->mutexName, (int)(((size_t)mptr) ^ ((size_t)privateMutexHandle)));
+    genSharedObjectName(mptr->mutexName);
   }
   *privateMutexHandle = CreateMutex
     ( NULL    // default security attributes

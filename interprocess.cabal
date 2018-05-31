@@ -15,6 +15,9 @@ build-type:          Simple
 cabal-version:       >=1.10
 extra-source-files:
     README.md
+    cbits/SharedObjectNamePosix.c
+    cbits/SharedObjectNameWin32.c
+    include/SharedObjectName.h
     src/Foreign/SharedPtr.h
     src/Foreign/SharedPtrPosix.h
     src/Foreign/SharedPtrPosix.c
@@ -29,14 +32,17 @@ library
     build-depends:     base >= 4.7 && < 5
     default-language:  Haskell2010
     ghc-options:       -Wall
+    include-dirs:      include
     includes:          src/Foreign/SharedPtr.h
     c-sources:         src/Foreign/SharedPtr.c
     if os(windows)
       includes:        src/Foreign/SharedPtrWin32.h
-      c-sources:       src/Foreign/SharedPtrWin32.c
+      c-sources:       cbits/SharedObjectNameWin32.c
+                       src/Foreign/SharedPtrWin32.c
     else
       includes:        src/Foreign/SharedPtrPosix.h
-      c-sources:       src/Foreign/SharedPtrPosix.c
+      c-sources:       cbits/SharedObjectNamePosix.c
+                       src/Foreign/SharedPtrPosix.c
 
 
 executable interprocess-concurrent-malloc

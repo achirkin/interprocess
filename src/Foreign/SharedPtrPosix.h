@@ -1,9 +1,7 @@
 #ifndef __HSSHAREDPTRPOSIX_H__
 #define __HSSHAREDPTRPOSIX_H__
+#include "SharedObjectName.h"
 #include <pthread.h>
-
-
-typedef char StoreName[32];
 
 typedef struct SharedMutex {
   pthread_mutex_t     mutVal;

@@ -1,12 +1,9 @@
 #ifndef __HSSHAREDPTRWIN32_H__
 #define __HSSHAREDPTRWIN32_H__
-#include <windows.h>
-
-
-typedef char StoreName[32];
+#include "SharedObjectName.h"
 
 typedef struct SharedMutex {
-  StoreName mutexName;
+  SharedObjectName mutexName;
 } SharedMutex;
 
 #endif /* __HSSHAREDPTRWIN32_H__ */

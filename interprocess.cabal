@@ -34,15 +34,14 @@ library
     ghc-options:       -Wall
     include-dirs:      include
     includes:          src/Foreign/SharedPtr.h
-    c-sources:         src/Foreign/SharedPtr.c
+    c-sources:         cbits/SharedObjectName.c
+                       src/Foreign/SharedPtr.c
     if os(windows)
       includes:        src/Foreign/SharedPtrWin32.h
-      c-sources:       cbits/SharedObjectNameWin32.c
-                       src/Foreign/SharedPtrWin32.c
+      c-sources:       src/Foreign/SharedPtrWin32.c
     else
       includes:        src/Foreign/SharedPtrPosix.h
-      c-sources:       cbits/SharedObjectNamePosix.c
-                       src/Foreign/SharedPtrPosix.c
+      c-sources:       src/Foreign/SharedPtrPosix.c
 
 
 executable interprocess-concurrent-malloc

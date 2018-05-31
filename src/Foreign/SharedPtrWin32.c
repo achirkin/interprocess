@@ -9,7 +9,7 @@ void _SharedMutex_init(SharedMutex *mptr, void **privateMutexHandle, const int c
   if (createNew != 0) {
     genSharedObjectName(mptr->mutexName);
   }
-  *privateMutexHandle = CreateMutex
+  *privateMutexHandle = CreateMutexA
     ( NULL    // default security attributes
     , FALSE   // initially not owned
     , mptr->mutexName );
@@ -50,7 +50,7 @@ int _SharedMutex_unlock(SharedMutex *mptr, void **privateMutexHandle) {
 
 // returns NULL if failed
 HsPtr _store_alloc(const char *memBlockName, void **privateMutexHandle, size_t size){
-  *privateMutexHandle = CreateFileMapping
+  *privateMutexHandle = CreateFileMappingA
     ( INVALID_HANDLE_VALUE       // use paging file
     , NULL                       // default security
     , PAGE_READWRITE             // read/write access

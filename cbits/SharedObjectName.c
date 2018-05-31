@@ -4,20 +4,29 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(WIN32) || defined(_WIN32) || defined(__WIN32) || defined(mingw32_HOST_OS)
+#include <windows.h>
+#define GetMyPid abs((int)GetCurrentProcessId())
+#else
+#include <unistd.h>
+#define GetMyPid (int)getpid()
+#endif
+
 static int _unique_seed = 0;
 static int _my_pid = 0;
-static const TCHAR keytable[]
+static const char keytable[]
   = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-static const TCHAR prefix[]
-  = "HsIPC.";
+static const char prefix[]
+  = "/HsIPC.";
 #define keytableLength 62
-#define prefixLength 6
+#define prefixLength 7
 
-void genSharedObjectName(LPTSTR const name) {
+
+void genSharedObjectName(char * const name) {
   // init this once per process
   if(_unique_seed == 0){
     srand(time(NULL));
-    _my_pid = abs((int)GetProcessId());
+    _my_pid = GetMyPid;
   }
   // clear variable
   memset(name, 0, sizeof(SharedObjectName));

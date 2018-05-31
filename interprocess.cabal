@@ -17,10 +17,8 @@ extra-source-files:
     README.md
     cbits/SharedObjectName.c
     include/SharedObjectName.h
-    src/Foreign/SharedPtr.h
-    src/Foreign/SharedPtrPosix.h
+    include/SharedPtr.h
     src/Foreign/SharedPtrPosix.c
-    src/Foreign/SharedPtrWin32.h
     src/Foreign/SharedPtrWin32.c
 
 
@@ -32,14 +30,11 @@ library
     default-language:  Haskell2010
     ghc-options:       -Wall
     include-dirs:      include
-    includes:          src/Foreign/SharedPtr.h
     c-sources:         cbits/SharedObjectName.c
                        src/Foreign/SharedPtr.c
     if os(windows)
-      includes:        src/Foreign/SharedPtrWin32.h
       c-sources:       src/Foreign/SharedPtrWin32.c
     else
-      includes:        src/Foreign/SharedPtrPosix.h
       c-sources:       src/Foreign/SharedPtrPosix.c
 
 

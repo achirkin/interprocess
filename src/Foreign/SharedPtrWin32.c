@@ -1,5 +1,4 @@
 #include "SharedPtr.h"
-#include <windows.h>
 #ifdef STDOUT_SYSCALL_DEBUG
 #include <stdio.h>
 #include <tchar.h>

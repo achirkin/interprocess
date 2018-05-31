@@ -4,10 +4,19 @@
 #include <stddef.h>
 #include "HsFFI.h"
 #include "MachDeps.h"
+#include "SharedObjectName.h"
+
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32) || defined(mingw32_HOST_OS)
-#include "SharedPtrWin32.h"
+#include <windows.h>
+typedef struct SharedMutex {
+  SharedObjectName mutexName;
+} SharedMutex;
 #else
-#include "SharedPtrPosix.h"
+#include <pthread.h>
+typedef struct SharedMutex {
+  pthread_mutex_t     mutVal;
+  pthread_mutexattr_t mutAttr;
+} SharedMutex;
 #endif
 
 typedef struct SharedAllocator SharedAllocator;

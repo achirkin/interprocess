@@ -18,6 +18,7 @@ extra-source-files:
     cbits/SharedObjectName.c
     include/SharedObjectName.h
     include/SharedPtr.h
+    src/Control/Concurrent/Process/QSem.c
     src/Foreign/SharedPtrPosix.c
     src/Foreign/SharedPtrWin32.c
 
@@ -26,11 +27,13 @@ library
     hs-source-dirs:    src
     exposed-modules:   Foreign.SharedPtr
                        Foreign.SharedPtr.C
+                       Control.Concurrent.Process.QSem
     build-depends:     base >= 4.7 && < 5
     default-language:  Haskell2010
     ghc-options:       -Wall
     include-dirs:      include
     c-sources:         cbits/SharedObjectName.c
+                       src/Control/Concurrent/Process/QSem.c
                        src/Foreign/SharedPtr.c
     if os(windows)
       c-sources:       src/Foreign/SharedPtrWin32.c
@@ -40,7 +43,16 @@ library
 
 executable interprocess-concurrent-malloc
   hs-source-dirs:      app
-  main-is:             Main.hs
+  main-is:             concurrent-malloc.hs
+  default-language:    Haskell2010
+  build-depends:       base >= 4.7 && < 5
+                     , typed-process >= 0.2
+                     , interprocess
+  ghc-options:         -threaded -Wall
+
+executable interprocess-wait-qsem
+  hs-source-dirs:      app
+  main-is:             wait-qsem.hs
   default-language:    Haskell2010
   build-depends:       base >= 4.7 && < 5
                      , typed-process >= 0.2

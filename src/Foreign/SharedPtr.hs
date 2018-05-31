@@ -8,8 +8,9 @@ module Foreign.SharedPtr
   , malloc, mallocBytes, realloc, free
   ) where
 
-import           Control.Exception   (bracket, throwIO)
+import           Control.Exception   (bracket)
 import           Data.Data           (Data)
+import           Foreign.C.Error
 import           Foreign.C.String
 import           Foreign.Ptr
 import           Foreign.SharedPtr.C
@@ -90,5 +91,5 @@ checkNullPointer :: String -> IO (Ptr a) -> IO (Ptr a)
 checkNullPointer s k = do
   p <- k
   if p == nullPtr
-  then throwIO (userError $ s ++ " returned NULL pointer; some low-level error occurred.")
+  then throwErrno (s ++ " returned NULL pointer.")
   else return p

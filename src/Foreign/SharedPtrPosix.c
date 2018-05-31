@@ -10,7 +10,7 @@ void _SharedMutex_init(SharedMutex *mptr, void **privateMutexHandle, const int c
   *privateMutexHandle = (void*)mptr;
   if (createNew != 0) {
     pthread_mutexattr_init(&(mptr->mutAttr));
-    pthread_mutexattr_settype(&(mptr->mutAttr), PTHREAD_MUTEX_ERRORCHECK);
+    // pthread_mutexattr_settype(&(mptr->mutAttr), PTHREAD_MUTEX_ERRORCHECK);
     pthread_mutexattr_setpshared(&(mptr->mutAttr), PTHREAD_PROCESS_SHARED);
     pthread_mutex_init(&(mptr->mutVal), &(mptr->mutAttr));
   }

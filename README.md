@@ -10,7 +10,7 @@ Features and TODO:
 
   * [x] `Foreign.SharedPtr` -- `malloc`, `realloc` and `free` in the shared memory region
         that can be accessed by multiple processes.
-  * [ ] Semaphores
+  * [ ] Semaphores (Linux only yet)
   * [ ] Mutexes (not sure if need this)
   * [ ] Mutable variables via `Storable` instance plus garbage collection.
   * [ ] Proper error messages

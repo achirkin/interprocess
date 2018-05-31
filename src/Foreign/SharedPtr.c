@@ -11,6 +11,7 @@
  */
 #include "SharedPtr.h"
 
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -78,8 +79,9 @@ HsWord8 getStoreId(const SharedPtr ptr){
  */
 #define STORAGE_TAG_BYTE_PTR(storePtr, storeSize, ptr) \
    ( (HsWord8*) \
-     (  ( (HsWord)ptr - (HsWord)storePtr + (HsWord)storeSize - 1 ) \
-        % (HsWord)storeSize + (HsWord)storePtr \
+     (  ( ( (((HsWord)ptr) - ((HsWord)storePtr)) + (((HsWord)storeSize) - ((HsWord)1)) ) \
+        % ((HsWord)storeSize) \
+        ) + ((HsWord)storePtr) \
      ) \
    ) \
 
@@ -154,7 +156,7 @@ SharedAllocData *_SharedAllocData_init(void **privateStoreHandle, void **mutexPr
   memset(sdataPtr, 0, sizeof(SharedAllocData));
   SharedPtr curNode;
   for(HsInt i = 0; i < WORD_SIZE_IN_BITS; i++) {
-    curNode = (SharedPtr) &(sdataPtr->availStorage[i]) - (SharedPtr) sdataPtr;
+    curNode = ((SharedPtr) &(sdataPtr->availStorage[i])) - ((SharedPtr) sdataPtr);
     sdataPtr->availStorage[i]
       = (struct ListNode)
         { .linkB = curNode
@@ -236,7 +238,7 @@ void shared_destroyAllocator(SharedAllocator *aptr) {
                , &(aptr->storePrivateHandles[storeId])
                , aptr->storeAddrs[storeId]
                , ((size_t)1) << storeId
-               , sdataPtr->usersN == 0
+               , remainingUsers == 0
                );
   }
   _SharedAllocData_destroy( sdataPtr
@@ -258,29 +260,36 @@ SharedPtr shared_ptrToShPtr(SharedAllocator *aptr, void *ptr) {
   while (i > 0 && aptr->storeAddrs[storeId] > ptr) {
     storeId = aptr->storeIdsSorted[--i];
   }
+
   SharedPtr base = (SharedPtr)ptr - (SharedPtr)(aptr->storeAddrs[storeId]);
   if (storeId == 0) {
+    assert(base < DEFAULT_STORE_SIZE);
     return base;
   } else {
+    assert(storeId >= DEFAULT_STORE_SIZE_FACTOR && storeId < WORD_SIZE_IN_BITS);
+    assert(base < (((SharedPtr)1) << storeId));
     return base | (((SharedPtr)1) << storeId);
   }
 }
 
 int _shared_initStore(SharedAllocator * const aptr, const HsWord8 storeId);
 
+// Must return a valid pointer if the system is intact.
+// This function returning NULL with valid allocator means implementation is broken.
+// If the allocator is erroneous, behavior is undefined.
 void *shared_shPtrToPtr(SharedAllocator *aptr, SharedPtr ptr){
   HsWord8 storeId = getStoreId(ptr);
   SharedPtr storeAddr = (SharedPtr)(aptr->storeAddrs[storeId]);
   if(storeAddr == 0){
-    if (_shared_initStore(aptr, storeId) != 0){
-      return NULL;
-    } else {
-      storeAddr = (SharedPtr)(aptr->storeAddrs[storeId]);
-    }
+    int initSuccess = _shared_initStore(aptr, storeId);
+    assert(initSuccess == 0);
+    storeAddr = (SharedPtr)(aptr->storeAddrs[storeId]);
   }
   if (storeId == 0) {
+    assert(ptr < DEFAULT_STORE_SIZE);
     return (void*)(storeAddr + ptr);
   } else {
+    assert(storeId >= DEFAULT_STORE_SIZE_FACTOR && storeId < WORD_SIZE_IN_BITS);
     return (void*)(storeAddr + (ptr & ~(((SharedPtr)1)<<storeId)));
   }
 }
@@ -294,6 +303,7 @@ int _shared_initStore(SharedAllocator * const aptr, const HsWord8 storeId){
   if ( aptr->storeAddrs[storeId] != 0 || storeId == 0) {
     return 0;
   }
+  assert(storeId >= DEFAULT_STORE_SIZE_FACTOR && storeId < WORD_SIZE_IN_BITS);
   SharedAllocData *sdataPtr = aptr->sharedAllocData;
   HsPtr storePtr;
   size_t storeSize = ((size_t)1) << storeId;
@@ -316,9 +326,6 @@ int _shared_initStore(SharedAllocator * const aptr, const HsWord8 storeId){
     // init first free block in the newly created store
     ListNode *firstNode = &(sdataPtr->availStorage[storeId]);
     ListNode *secondNode = (ListNode*)shared_shPtrToPtr(aptr, firstNode->linkF);
-    if (secondNode == NULL) {
-      return 1;
-    }
     // last byte of the storage stands for (storePtr-1)
     *((HsWord8*)storePtr + storeSize - 1)
       = storeId | 0x80; // first bit is flag, others are free storage size (==storeSize)
@@ -347,11 +354,9 @@ int _shared_initStore(SharedAllocator * const aptr, const HsWord8 storeId){
   return 0;
 }
 
-void *shared_malloc(SharedAllocator *aptr, size_t size) {
-  int mlock = _SharedMutex_lock(&(aptr->sharedAllocData->mutex), &(aptr->mutexPrivateHandle));
-  if ( mlock != 0 ) {
-    return NULL;
-  }
+
+
+static inline void *_shared_malloc(SharedAllocator *aptr, size_t size) {
   HsWord8 storeId;
   HsWord8 allocSizeBit = allocFactor(size);
   HsWord8 availSizeBit = allocSizeBit;
@@ -369,20 +374,20 @@ void *shared_malloc(SharedAllocator *aptr, size_t size) {
   }
   // By now, either we found a free block, or we can create one
   if ( nptr->linkF < DEFAULT_STORE_SIZE ) {
+    assert(availSizeBit >= DEFAULT_STORE_SIZE_FACTOR);
     if (_shared_initStore(aptr,availSizeBit) != 0) {
-      _SharedMutex_unlock(&(aptr->sharedAllocData->mutex), &(aptr->mutexPrivateHandle));
       return NULL;
     }
     nptr = &(aptr->sharedAllocData->availStorage[availSizeBit]);
   }
   storeId = getStoreId(nptr->linkF);
+  assert(storeId >= DEFAULT_STORE_SIZE_FACTOR && storeId < WORD_SIZE_IN_BITS);
   size_t storeSize = ((size_t)1) << storeId;
   // By now, nptr list is not empty, and all lists allocSizeBit..availSizeBit-1 are empty.
   ListNode *allocNodePtr, *secondNodePtr;
   HsWord8* storePtr = aptr->storeAddrs[storeId];
   if (storePtr == 0) {
     if (_shared_initStore(aptr, storeId) != 0) {
-      _SharedMutex_unlock(&(aptr->sharedAllocData->mutex), &(aptr->mutexPrivateHandle));
       return NULL;
     } else {
       storePtr = aptr->storeAddrs[storeId];
@@ -391,17 +396,9 @@ void *shared_malloc(SharedAllocator *aptr, size_t size) {
   // Now, nptr points to the beginning of non-empty list of free nodes of required size.
   // Allocate a node!
   allocNodePtr = (ListNode*)shared_shPtrToPtr(aptr, nptr->linkF);
-  if (allocNodePtr == NULL) {
-    _SharedMutex_unlock(&(aptr->sharedAllocData->mutex), &(aptr->mutexPrivateHandle));
-    return NULL;
-  }
 
   // remove node from the list
   secondNodePtr = (ListNode*)shared_shPtrToPtr(aptr, allocNodePtr->linkF);
-  if (secondNodePtr == NULL) {
-    _SharedMutex_unlock(&(aptr->sharedAllocData->mutex), &(aptr->mutexPrivateHandle));
-    return NULL;
-  }
   secondNodePtr->linkB = allocNodePtr->linkB;
   nptr->linkF = allocNodePtr->linkF;
 
@@ -426,29 +423,19 @@ void *shared_malloc(SharedAllocator *aptr, size_t size) {
   // set flag to occupied
   *STORAGE_TAG_BYTE_PTR(storePtr, storeSize, allocNodePtr) = allocSizeBit;
   // return it!
-  mlock = _SharedMutex_unlock(&(aptr->sharedAllocData->mutex), &(aptr->mutexPrivateHandle));
-  if ( mlock != 0 ) {
-    return NULL;
-  }
   return (void*)allocNodePtr;
 }
 
-void *shared_realloc(SharedAllocator *aptr, void *ptr, size_t size) {
-  return ptr;
-}
-
-void  shared_free(SharedAllocator *aptr, void *ptr) {
-  int mlock = _SharedMutex_lock(&(aptr->sharedAllocData->mutex), &(aptr->mutexPrivateHandle));
-  if ( mlock != 0 ) {
-    return;
-  }
-  SharedPtr nodeSharedPtr = shared_ptrToShPtr(aptr, ptr);
-  HsWord8 storeId = getStoreId(nodeSharedPtr);
+static inline void _shared_free(SharedAllocator *aptr, void *ptr) {
+  ListNode *myPtr = (ListNode*)ptr;
+  SharedPtr mySharedPtr = shared_ptrToShPtr(aptr, ptr);
+  HsWord8 storeId = getStoreId(mySharedPtr);
+  assert(storeId >= DEFAULT_STORE_SIZE_FACTOR && storeId < WORD_SIZE_IN_BITS);
   size_t storeSize = ((size_t)1) << storeId; // guaranteed: storeId != 0
   HsWord8 *storePtr = aptr->storeAddrs[storeId];
   HsWord8 nodeSizeBit = *STORAGE_TAG_BYTE_PTR(storePtr, storeSize, ptr);
+  assert(nodeSizeBit >= MIN_ALLOC_FACTOR && nodeSizeBit <= storeId);
   // join buddies if needed
-  ListNode *myPtr = (ListNode*)ptr;
   ListNode *buddyPtr
       = (ListNode*)( (((SharedPtr)myPtr - (SharedPtr)storePtr) ^ (((SharedPtr)1) << nodeSizeBit))
                     + (SharedPtr)storePtr );
@@ -459,33 +446,127 @@ void  shared_free(SharedAllocator *aptr, void *ptr) {
     // remove buddy from corresponding list;
     ListNode *tmpNode;
     tmpNode = (ListNode *)shared_shPtrToPtr(aptr, buddyPtr->linkF);
-    if(tmpNode != NULL) {
-      tmpNode->linkB = buddyPtr->linkB;
-    }
+    tmpNode->linkB = buddyPtr->linkB;
     tmpNode = (ListNode *)shared_shPtrToPtr(aptr, buddyPtr->linkB);
-    if(tmpNode != NULL) {
-      tmpNode->linkF = buddyPtr->linkF;
-    }
+    tmpNode->linkF = buddyPtr->linkF;
     // take the left one further
     if(buddyPtr < myPtr) {
       myPtr    = buddyPtr;
-      nodeSharedPtr = ((SharedPtr)myPtr - (SharedPtr)storePtr) | (SharedPtr)storeSize;
+      mySharedPtr = ((SharedPtr)myPtr - (SharedPtr)storePtr) | (SharedPtr)storeSize;
     }
     nodeSizeBit++;
     buddyPtr
       = (ListNode*)( (((SharedPtr)myPtr - (SharedPtr)storePtr) ^ (((SharedPtr)1) << nodeSizeBit))
                     + (SharedPtr)storePtr );
   }
+  *STORAGE_TAG_BYTE_PTR(storePtr, storeSize, myPtr) = nodeSizeBit | 0x80;
   // Now, there are no buddies to join; add the node to the pool
   ListNode *firstNodePtr, *secondNodePtr;
   firstNodePtr = &(aptr->sharedAllocData->availStorage[nodeSizeBit]);
   secondNodePtr = (ListNode*)shared_shPtrToPtr(aptr, firstNodePtr->linkF);
   myPtr->linkF = firstNodePtr->linkF;
-  firstNodePtr->linkF = nodeSharedPtr;
-  if (secondNodePtr != NULL) {
-    myPtr->linkB = secondNodePtr->linkB;
-    secondNodePtr->linkB = nodeSharedPtr;
+  myPtr->linkB = secondNodePtr->linkB;
+  firstNodePtr->linkF = mySharedPtr;
+  secondNodePtr->linkB = mySharedPtr;
+}
+
+
+static inline void *_shared_realloc(SharedAllocator *aptr, void *ptr, size_t size) {
+  SharedPtr nodeSharedPtr = shared_ptrToShPtr(aptr, ptr);
+  HsWord8 storeId = getStoreId(nodeSharedPtr);
+  size_t storeSize = ((size_t)1) << storeId; // guaranteed: storeId != 0
+  HsWord8 *storePtr = aptr->storeAddrs[storeId];
+  HsWord8 nodeSizeBit = *STORAGE_TAG_BYTE_PTR(storePtr, storeSize, ptr);
+  HsWord8 allocSizeBit = allocFactor(size);
+
+  void *buddyPtr;
+  // free extra memory if not needed anymore
+  while ( nodeSizeBit > allocSizeBit) {
+    nodeSizeBit--;
+    buddyPtr
+       = (void*)( ( ( (SharedPtr)ptr - (SharedPtr)storePtr )
+                    ^ (((SharedPtr)1) << nodeSizeBit)
+                  ) + (SharedPtr)storePtr );
+    if ( buddyPtr < ptr ) {
+      nodeSizeBit++;
+      break;
+    }
+    *STORAGE_TAG_BYTE_PTR(storePtr, storeSize, buddyPtr) = nodeSizeBit;
+    *STORAGE_TAG_BYTE_PTR(storePtr, storeSize, ptr) = nodeSizeBit;
+    _shared_free(aptr, buddyPtr);
   }
-  *STORAGE_TAG_BYTE_PTR(storePtr, storeSize, myPtr) = nodeSizeBit | 0x80;
-  _SharedMutex_unlock(&(aptr->sharedAllocData->mutex), &(aptr->mutexPrivateHandle));
+  // use buddy memory if available
+  if (allocSizeBit <= storeId) {
+    ListNode *buddyPrev, *buddyNext;
+    while ( nodeSizeBit < allocSizeBit ) {
+      buddyPtr
+         = (void*)( ( ( (SharedPtr)ptr - (SharedPtr)storePtr )
+                      ^ (((SharedPtr)1) << nodeSizeBit)
+                    ) + (SharedPtr)storePtr );
+      if ( buddyPtr < ptr || (*STORAGE_TAG_BYTE_PTR(storePtr, storeSize, buddyPtr) != (nodeSizeBit | 0x80)) ) {
+        break;
+      }
+      // remove node from the list
+      buddyPrev = (ListNode*)shared_shPtrToPtr(aptr, ((ListNode*)buddyPtr)->linkB);
+      buddyNext = (ListNode*)shared_shPtrToPtr(aptr, ((ListNode*)buddyPtr)->linkF);
+      buddyPrev->linkF = ((ListNode*)buddyPtr)->linkF;
+      buddyNext->linkB = ((ListNode*)buddyPtr)->linkB;
+      nodeSizeBit++;
+      *STORAGE_TAG_BYTE_PTR(storePtr, storeSize, ptr) = nodeSizeBit;
+    }
+  }
+  // return the same pointer if the size matches
+  if ( nodeSizeBit == allocSizeBit ) {
+    return ptr;
+  }
+  // copy data because cheaper options failed
+  void *rptr = _shared_malloc(aptr, size);
+  if ( rptr == NULL ) {
+    return NULL;
+  }
+  size_t toCopy = (((size_t)1) << nodeSizeBit) - 1;
+  if (toCopy > size) {
+    toCopy = size;
+  }
+  memcpy( rptr, ptr, toCopy);
+  _shared_free(aptr, ptr);
+
+  return rptr;
+}
+
+
+
+
+void *shared_malloc(SharedAllocator *aptr, size_t size){
+  int mlock = _SharedMutex_lock(&(aptr->sharedAllocData->mutex), &(aptr->mutexPrivateHandle));
+  if ( mlock != 0 ) {
+    return NULL;
+  }
+  void* r = _shared_malloc(aptr, size);
+  mlock = _SharedMutex_unlock(&(aptr->sharedAllocData->mutex), &(aptr->mutexPrivateHandle));
+  if ( mlock != 0 ) {
+    return NULL;
+  }
+  return r;
+}
+
+void *shared_realloc(SharedAllocator *aptr, void *ptr, size_t size) {
+  int mlock = _SharedMutex_lock(&(aptr->sharedAllocData->mutex), &(aptr->mutexPrivateHandle));
+  if ( mlock != 0 ) {
+    return NULL;
+  }
+  void* r = _shared_realloc(aptr, ptr, size);
+  mlock = _SharedMutex_unlock(&(aptr->sharedAllocData->mutex), &(aptr->mutexPrivateHandle));
+  if ( mlock != 0 ) {
+    return NULL;
+  }
+  return r;
+}
+
+void  shared_free(SharedAllocator *aptr, void *ptr) {
+  int mlock = _SharedMutex_lock(&(aptr->sharedAllocData->mutex), &(aptr->mutexPrivateHandle));
+  _shared_free(aptr, ptr);
+  if ( mlock == 0 ) {
+    _SharedMutex_unlock(&(aptr->sharedAllocData->mutex), &(aptr->mutexPrivateHandle));
+  }
 }

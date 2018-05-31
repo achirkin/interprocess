@@ -8,12 +8,13 @@ concurrently malloc and free memory in different processes using them.
 
 Features and TODO:
 
-  * [x] `Foreign.SharedPtr` -- `malloc` and `free` in the shared memory region
+  * [x] `Foreign.SharedPtr` -- `malloc`, `realloc` and `free` in the shared memory region
         that can be accessed by multiple processes.
-  * [ ] `Foreign.SharedPtr` `realloc` not implemented yet!
   * [ ] Semaphores
   * [ ] Mutexes (not sure if need this)
   * [ ] Mutable variables via `Storable` instance plus garbage collection.
+  * [ ] Proper error messages
+  * [ ] Debug, verbose mode
 
 The idea of the library is to address GHC stop-the-world GC problem:
 

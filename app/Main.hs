@@ -12,11 +12,11 @@ import           System.Exit
 import           System.IO
 import           System.Process.Typed
 import           Text.Read             (readMaybe)
-
+import           Data.IORef
 
 -- | Supply integer argument to a program to set the allocation size.
----  Number 10000 is default, corresponds to argound 100MB of memory and very fast
---   Number 80000 corresponds to around 7GB of memory
+---  Number 10000 is default, corresponds to argound 800MB of memory and very fast
+--   Number 25000 corresponds to around 5GB of memory
 main :: IO ()
 main = do
   args <- getArgs
@@ -97,28 +97,51 @@ runB n = do
 -- | Run malloc on increasingly big size, 8 + i bytes, where i = [1..n].
 runMallocs :: String -> Allocator -> Int -> IO ()
 runMallocs runnerName a n = do
+    reqBytes <- newIORef 0
+    -- run malloc
     ptrs <- forM [1..n] $ \i -> do
       p <- Shared.mallocBytes a (8+i)
+      modifyIORef' reqBytes (+(8+i))
       when (mod i (n `div` thisManyMallocFreeReports) == 7) $
         putStrLn $ "[" ++ runnerName ++ "] Malloced: " ++ show p
       forM_ [0 .. i `div` 8] $ \j -> pokeElemOff p j (i - j)
       return p
+    -- run realloc
+    ptrs' <- forM (zip [1..] ptrs)  $ \(i, p) -> do
+      let j = newElemLength i
+      p' <- Shared.realloc a p (8*j)
+      modifyIORef' reqBytes (+(8*j))
+      when (mod i (n `div` thisManyMallocFreeReports) == 7) $
+        putStrLn $ "[" ++ runnerName ++ "] Realloced: " ++ show p'
+      return p'
+
+    -- run free
     r <- foldM (\(y, i) p -> do
+      let j = newElemLength i
       -- generate some work so it needs time to finish
-      x <- foldM (const $ peekElemOff p) 0 [div i 8, div i 8 - 1 .. 0]
+      x <- foldM (const $ peekElemOff p) 0 [j-1, j-2 .. 0]
       Shared.free a p
       when (mod i (n `div` thisManyMallocFreeReports) == 7) $
         putStrLn $ "[" ++ runnerName ++ "] Liberated ptr and read value: "
                  ++ show x
       return (y + x, i + 1)
-      ) (0, 1 :: Int) ptrs
+      ) (0, 1 :: Int) ptrs'
     putStrLn $ "[" ++ runnerName ++ "] Validate results: "
             ++ show (r, sum [1..n])
-    putStrLn $ "[" ++ runnerName ++ "] TotalMemory requested in a loop (MB): "
-             ++ show (fromIntegral (8*n + n * (n-1) `div` 2)
-                                                      / (1024 * 1024) :: Double)
+    reqBytesVal <- readIORef reqBytes
+    putStrLn $ "[" ++ runnerName ++ "] TotalMemory requested in the loops (MB): "
+             ++ show (fromIntegral ((reqBytesVal * 1000 * 1000) `div` (1024 * 1024))
+                          / (1000 * 1000) :: Double)
   where
     thisManyMallocFreeReports = 10
+    newElemLength i = case mod i 9 of
+      1 -> 3
+      2 -> 1
+      3 -> min 5 (div i 3)
+      4 -> i + 7
+      5 -> i * 2
+      6 -> div (i * 3) 2
+      _ -> i
 
 
 hPutStorable :: Storable a => Handle -> a -> IO ()

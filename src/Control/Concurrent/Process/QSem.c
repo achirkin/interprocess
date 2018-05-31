@@ -15,8 +15,65 @@ void  qsem_name(QSem *qsem, char * const name);
 
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32) || defined(mingw32_HOST_OS)
 #include <windows.h>
+#include <limits.h>
 
+typedef struct QSem {
+  HANDLE            mainSem;
+  SharedObjectName  mainName;
+} QSem;
 
+QSem *qsem_new(HsInt count) {
+  QSem *r = malloc(sizeof(QSem));
+  if (r == NULL) {
+    return NULL;
+  }
+  genSharedObjectName(r->mainName);
+
+  HANDLE semPtr = CreateSemaphoreA( NULL, (LONG)count, LONG_MAX, r->mainName );
+
+  if (semPtr == NULL) {
+    free(r);
+    return NULL;
+  }
+
+  r->mainSem = semPtr;
+  return r;
+}
+
+QSem *qsem_lookup(const char *name) {
+  QSem *r = malloc(sizeof(QSem));
+  if (r == NULL) {
+    return NULL;
+  }
+
+  HANDLE semPtr = OpenSemaphoreA( SEMAPHORE_MODIFY_STATE | SYNCHRONIZE, TRUE, name );
+
+  if (semPtr == NULL) {
+    free(r);
+    return NULL;
+  }
+
+  r->mainSem = semPtr;
+  strcpy(r->mainName, name);
+  return r;
+}
+
+void qsem_close(QSem *qsem) {
+  CloseHandle(qsem->mainSem);
+  free(qsem);
+}
+
+int qsem_signal(QSem *qsem) {
+  return (ReleaseSemaphore(qsem->mainSem, 1, NULL) == 0);
+}
+
+int qsem_wait(QSem *qsem) {
+  return (WaitForSingleObject(qsem->mainSem, INFINITE) != WAIT_OBJECT_0);
+}
+
+void qsem_name(QSem *qsem, char * const name) {
+  strcpy(name, qsem->mainName);
+}
 
 
 #else

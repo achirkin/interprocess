@@ -15,8 +15,7 @@ build-type:          Simple
 cabal-version:       >=1.10
 extra-source-files:
     README.md
-    cbits/SharedObjectNamePosix.c
-    cbits/SharedObjectNameWin32.c
+    cbits/SharedObjectName.c
     include/SharedObjectName.h
     src/Foreign/SharedPtr.h
     src/Foreign/SharedPtrPosix.h

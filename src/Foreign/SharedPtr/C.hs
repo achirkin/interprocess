@@ -3,7 +3,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RoleAnnotations            #-}
 module Foreign.SharedPtr.C
-  ( SharedPtr (), Allocator
+  ( SharedPtr (), Allocator, AllocatorT
 
   , c'shared_createAllocator, c'shared_lookupAllocator
   , c'shared_destroyAllocator, c'shared_getStoreName
@@ -28,8 +28,9 @@ type role SharedPtr phantom
 newtype SharedPtr a = SharedPtr ( Ptr a )
   deriving (Eq, Ord, Show, Data, Generic, Storable)
 
+-- | @C@ structure, should not be inspected from Haskell code
 data AllocatorT
--- | Opaque pointer to the allocator type defined in C code.
+-- | Opaque pointer to the allocator type defined in @C@ code.
 type Allocator = Ptr AllocatorT
 
 

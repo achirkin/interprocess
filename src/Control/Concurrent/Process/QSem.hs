@@ -7,6 +7,7 @@ module Control.Concurrent.Process.QSem
   ) where
 
 import           Control.Monad                     (when)
+import           Data.Data                         (Typeable)
 import           Foreign.C.Error
 import           Foreign.C.String
 import           Foreign.C.Types
@@ -21,6 +22,7 @@ data QSemT
 -- | 'QSem' is a quantity semaphore in which the resource is aqcuired
 --   and released in units of one.
 data QSem = QSem !(SOName QSem) !(ForeignPtr QSemT)
+  deriving (Eq, Typeable)
 
 -- | Build a new 'QSem' with a supplied initial quantity.
 --   The initial quantity must be at least 0.

@@ -63,7 +63,7 @@ runB = do
             wasAvailable <- tryWaitQSem qSem
             if wasAvailable
             then
-              putStrLn $ "[B] (" ++ show i ++ ") was available - " ++ reverse instruction
+              putStrLn $ "[B] (" ++ show i ++ ") Was available - " ++ reverse instruction
             else do
               putStrLn $ "[B] (" ++ show i ++ ") Ha-ha, I am not blocked!"
               waitQSem qSem

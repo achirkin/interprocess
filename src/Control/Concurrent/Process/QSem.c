@@ -9,6 +9,7 @@ QSem *qsem_lookup(const char *name);
 void  qsem_close(QSem *qsem);
 int   qsem_signal(QSem *qsem);
 int   qsem_wait(QSem *qsem);
+int   qsem_trywait(QSem *qsem);
 void  qsem_name(QSem *qsem, char * const name);
 
 
@@ -70,6 +71,11 @@ int qsem_signal(QSem *qsem) {
 int qsem_wait(QSem *qsem) {
   return (WaitForSingleObject(qsem->mainSem, INFINITE) != WAIT_OBJECT_0);
 }
+
+int qsem_trywait(QSem *qsem) {
+  return (WaitForSingleObject(qsem->mainSem, 0) != WAIT_OBJECT_0);
+}
+
 
 void qsem_name(QSem *qsem, char * const name) {
   strcpy(name, qsem->mainName);
@@ -171,6 +177,10 @@ int qsem_signal(QSem *qsem) {
 
 int qsem_wait(QSem *qsem) {
   return sem_wait(qsem->mainSem);
+}
+
+int qsem_trywait(QSem *qsem) {
+  return sem_trywait(qsem->mainSem);
 }
 
 void qsem_name(QSem *qsem, char * const name) {

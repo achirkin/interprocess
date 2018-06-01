@@ -3,7 +3,7 @@
 --
 --   Based on POSIX or Win32 C semaphores
 module Control.Concurrent.Process.QSem
-  ( QSem, newQSem, lookupQSem, waitQSem, signalQSem, qSemName
+  ( QSem, newQSem, lookupQSem, waitQSem, tryWaitQSem, signalQSem, qSemName
   ) where
 
 import           Control.Monad                     (when)
@@ -59,6 +59,20 @@ qSemName (QSem r _) = r
 waitQSem :: QSem -> IO ()
 waitQSem (QSem _ p) = withForeignPtr p $ checkZeroReturn "waitQSem" . c'qsem_wait
 
+-- | Try to take a unit of the `QSem`.
+--
+--   This function does not wait, in fact. Sorry for naming.
+--
+--   Returns:
+--
+--     * @True@ if successfully took a unit of `QSem` (it is decremented)
+--     * @False@ if number of available units is less than @1@  (it is not decremented)
+--
+--   This function does not throw an exception.
+tryWaitQSem :: QSem -> IO Bool
+tryWaitQSem (QSem _ p) = withForeignPtr p $ fmap (0 ==) . c'qsem_trywait
+
+
 -- | Signal that a unit of the 'QSem' is available
 --
 --   This function throws an exception
@@ -95,6 +109,9 @@ foreign import ccall unsafe "qsem_signal"
 
 foreign import ccall unsafe "qsem_wait"
   c'qsem_wait :: Ptr QSemT -> IO CInt
+
+foreign import ccall unsafe "qsem_trywait"
+  c'qsem_trywait :: Ptr QSemT -> IO CInt
 
 foreign import ccall unsafe "qsem_name"
   c'qsem_name :: Ptr QSemT -> CString -> IO ()

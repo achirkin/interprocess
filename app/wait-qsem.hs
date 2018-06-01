@@ -36,13 +36,13 @@ runA n = do
 
       forM_ (zip [99 :: Int, 98..] procs) $ \(i, p) -> do
         hPutSOName (getStdin p) (qSemName qSem)
+        hPrint (getStdin p) $ 100 - i
         hPutStrLn (getStdin p) $ "Say " ++ show i ++ " bottles of rum!"
         hFlush (getStdin p)
 
-      threadDelay 1000000
+      threadDelay 100000
       putStrLn "[A] Done! Signal semaphore available to other threads"
       replicateM_ n $ threadDelay 100000 >> signalQSem qSem
-      threadDelay 1000000
 
     putStrLn "[A] Finished successfully"
 
@@ -51,15 +51,31 @@ runA n = do
 runB :: IO ()
 runB = do
     let inputH = stdin
-    Just qSemRef <- hGetSOName inputH
+    Just qSemRef <- hGetSOName inputH  -- get name of a semaphore
     qSem <- lookupQSem qSemRef
-    instruction <- hGetLine inputH
+    i <- read <$> hGetLine inputH      -- get id of a spawned process
+    instruction <- hGetLine inputH     -- some arbitrary text
     putStrLn $ "[B] " ++ instruction
-    threadDelay 1000000
-    waitQSem qSem
-    putStrLn $ "[B] " ++ reverse instruction
+    threadDelay 500000
+    if mod i 7 == (2 :: Int)
+    then
+      let procedure = do
+            wasAvailable <- tryWaitQSem qSem
+            if wasAvailable
+            then
+              putStrLn $ "[B] (" ++ show i ++ ") was available - " ++ reverse instruction
+            else do
+              putStrLn $ "[B] (" ++ show i ++ ") Ha-ha, I am not blocked!"
+              waitQSem qSem
+              putStrLn $ "[B] (" ++ show i ++ ") Woke up"
+              signalQSem qSem
+              threadDelay 100000
+              procedure
+      in procedure
+    else do
+      waitQSem qSem
+      putStrLn $ "[B] " ++ reverse instruction
     putStrLn "[B] Finished successfully"
-    threadDelay 1000000
 
 
 withNProcesses :: Int

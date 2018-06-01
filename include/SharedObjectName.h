@@ -1,9 +1,9 @@
 #ifndef __HSSHAREDOBJECTNAME_H__
 #define __HSSHAREDOBJECTNAME_H__
 
-#define SharedObjectNameLength 32
+#define SHARED_OBJECT_NAME_LENGTH 32
 #ifndef HS_IMPORT_CONSTANTS_ONLY
-typedef char SharedObjectName[SharedObjectNameLength];
+typedef char SharedObjectName[SHARED_OBJECT_NAME_LENGTH];
 void genSharedObjectName(char * const name);
 #endif
 

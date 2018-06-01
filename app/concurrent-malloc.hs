@@ -45,9 +45,8 @@ runA n = do
       ec' <- withProcess_ processBConfig $ \procB -> do
 
         putStrLn $ "[A] Sending store name: "
-                 ++ show (allocStoreName sa)
-        hPutStrLn (getStdin procB)
-                    (unAllocStoreName $ allocStoreName sa)
+                  ++ show (allocStoreName sa)
+        hPutStorable (getStdin procB) (allocStoreName sa)
         putStrLn $ "[A] Sending SharedPtr: "
                   ++ show (toSharedPtr sa ptr)
         hPutStorable (getStdin procB)
@@ -71,10 +70,8 @@ runA n = do
 runB :: Int -> IO ()
 runB n = do
     let inputH = stdin
-    hSetBinaryMode inputH False
-    sname <- AllocStoreName <$> hGetLine inputH
+    Just sname <- hGetStorable inputH
     putStrLn $ "[B] Received allocator store name: " ++ show sname
-    hSetBinaryMode inputH True
     Just xptr <- hGetStorable inputH :: IO (Maybe (SharedPtr Int))
     putStrLn $ "[B] Received SharedPtr: " ++ show xptr
 

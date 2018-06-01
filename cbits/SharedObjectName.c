@@ -39,7 +39,7 @@ void genSharedObjectName(char * const name) {
                 , .rem  = 0 }
       , procV = { .quot = (_unique_seed++) ^ 0x028ab100
                 , .rem  = 0 };
-  while( (c = c / keytableLength) > 0 && i < (SharedObjectNameLength-3) ) {
+  while( (c = c / keytableLength) > 0 && i < (SHARED_OBJECT_NAME_LENGTH-3) ) {
     randV = div(randV.quot, keytableLength);
     globV = div(globV.quot, keytableLength);
     procV = div(procV.quot, keytableLength);

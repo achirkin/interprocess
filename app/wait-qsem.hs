@@ -6,6 +6,7 @@ import           Control.Monad
 import           Data.List                       (partition)
 import           Data.Maybe                      (fromMaybe)
 import           Data.Monoid                     (First (..))
+import           Foreign.SharedObjectName
 import           System.Environment
 import           System.IO
 import           System.Process.Typed
@@ -34,7 +35,7 @@ runA n = do
       qSem <- newQSem 0
 
       forM_ (zip [99 :: Int, 98..] procs) $ \(i, p) -> do
-        hPutQSemRef (getStdin p) (getQSemRef qSem)
+        hPutSOName (getStdin p) (qSemName qSem)
         hPutStrLn (getStdin p) $ "Say " ++ show i ++ " bottles of rum!"
         hFlush (getStdin p)
 
@@ -43,17 +44,15 @@ runA n = do
       replicateM_ n $ threadDelay 100000 >> signalQSem qSem
       threadDelay 1000000
 
-    putStrLn "[A]  Finished successfully"
+    putStrLn "[A] Finished successfully"
 
 
 
 runB :: IO ()
 runB = do
     let inputH = stdin
-    hSetBinaryMode inputH True
-    Just qSemRef <- hGetQSemRef inputH
+    Just qSemRef <- hGetSOName inputH
     qSem <- lookupQSem qSemRef
-    hSetBinaryMode inputH False
     instruction <- hGetLine inputH
     putStrLn $ "[B] " ++ instruction
     threadDelay 1000000

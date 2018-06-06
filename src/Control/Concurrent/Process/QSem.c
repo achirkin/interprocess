@@ -86,7 +86,6 @@ void qsem_name(QSem *qsem, char * const name) {
 #include <fcntl.h>           /* For O_* constants */
 #include <semaphore.h>
 #include <string.h>
-#include "HsFFI.h"
 
 #define GuardNameSuffix "X"
 

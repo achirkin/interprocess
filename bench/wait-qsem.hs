@@ -12,6 +12,8 @@ import           System.IO
 import           System.Process.Typed
 import           Text.Read                       (readMaybe)
 
+
+-- > stack bench interprocess:wait-qsem --benchmark-arguments='15'
 main :: IO ()
 main = do
   args <- getArgs
@@ -25,11 +27,12 @@ main = do
 
 runA :: Int -> IO ()
 runA n = do
-    progName <- getProgName
+    execFile <- getExecutablePath
     args <- getArgs
     let processBConfig = setStdin createPipe
-                       $ proc progName ("slave":args)
+                       $ proc execFile ("slave":args)
 
+    putStrLn "[A] Starting..."
     withNProcesses n processBConfig $ \procs -> do
 
       qSem <- newQSem 0

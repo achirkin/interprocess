@@ -23,10 +23,6 @@ extra-source-files:
     src/Foreign/SharedPtrPosix.c
     src/Foreign/SharedPtrWin32.c
 
-flag examples
-    description:
-      Build example-test programs
-    default: False
 
 flag dev
     description:
@@ -61,10 +57,9 @@ library
         ghc-options:   -O2
 
 
-executable interprocess-concurrent-malloc
-    if !flag(examples)
-      buildable:         False
-    hs-source-dirs:      app
+benchmark concurrent-malloc
+    type:                exitcode-stdio-1.0
+    hs-source-dirs:      bench
     main-is:             concurrent-malloc.hs
     default-language:    Haskell2010
     build-depends:       base
@@ -72,10 +67,9 @@ executable interprocess-concurrent-malloc
                        , interprocess
     ghc-options:         -threaded -Wall
 
-executable interprocess-wait-qsem
-    if !flag(examples)
-      buildable:         False
-    hs-source-dirs:      app
+benchmark wait-qsem
+    type:                exitcode-stdio-1.0
+    hs-source-dirs:      bench
     main-is:             wait-qsem.hs
     default-language:    Haskell2010
     build-depends:       base

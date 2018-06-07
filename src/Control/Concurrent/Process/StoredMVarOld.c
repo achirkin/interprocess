@@ -9,14 +9,29 @@ MVar *mvar_new(size_t byteSize);
 MVar *mvar_lookup(const char *name);
 void  mvar_destroy(MVar *mvar);
 void  mvar_name(MVar *mvar, char * const name);
+void *mvar_dataptr(MVar *mvar);
 
-void mvar_take(MVar *mvar, void *localDataPtr);
-int  mvar_trytake(MVar *mvar, void *localDataPtr);
-void mvar_put(MVar *mvar, void *localDataPtr);
-int  mvar_tryput(MVar *mvar, void *localDataPtr);
-void mvar_read(MVar *mvar, void *localDataPtr);
-int  mvar_tryread(MVar *mvar, void *localDataPtr);
+/* All mvar_xxxstart functions lock MVar state on success
+   and do not lock it on failure.
 
+   mvar_tryxxxstart functions return 1 on failure and 0 on success.
+ */
+
+// acquire and lock mvar, wait until can take it
+void mvar_takestart(MVar *mvar);
+int  mvar_trytakestart(MVar *mvar);
+// release mvar, set its state to full, and wakeup at least one putter
+void mvar_takeonsuccess(MVar *mvar);
+// acquire and lock mvar, wait until can put it
+void mvar_putstart(MVar *mvar);
+int  mvar_tryputstart(MVar *mvar);
+// release mvar, set its state to empty, and wakeup all getters
+void mvar_putonsuccess(MVar *mvar);
+// acquire and lock mvar, wait until can read it, increment reader counter
+void mvar_readstart(MVar *mvar);
+int  mvar_tryreadstart(MVar *mvar);
+// release mvar, decrement reader counter, and maybe wakeup at least one taker
+void mvar_readonsuccess(MVar *mvar);
 
 
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32) || defined(mingw32_HOST_OS)
@@ -31,10 +46,6 @@ int  mvar_tryread(MVar *mvar, void *localDataPtr);
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include <stdio.h>
-#include <time.h>
-#include <errno.h>
-
 typedef struct MVarState {
   int                 isFull;
   int                 pendingReaders;
@@ -44,7 +55,7 @@ typedef struct MVarState {
   pthread_cond_t      canTakeC;
   pthread_cond_t      canPutC;
   pthread_condattr_t  condAttr;
-  size_t              dataSize;
+  size_t              storeSize;
 } MVarState;
 
 typedef struct MVar {
@@ -55,6 +66,9 @@ typedef struct MVar {
   /* Actual data is stored next to the MVarState
    */
   void      *dataPtr;
+  /* Link to a local copy of the data
+   */
+  void      *localDataPtr;
   /* Name of the shared memory region, used to share mvar across processes.
    */
   SharedObjectName  mvarName;
@@ -74,29 +88,35 @@ MVar *mvar_new(size_t byteSize) {
   if (r == NULL) {
     return NULL;
   }
+  void *locdata = malloc(byteSize);
+  if (locdata == NULL) {
+    free(r);
+    return NULL;
+  }
   genSharedObjectName(r->mvarName);
 
   // allocate memory
   r->statePtr = (MVarState*) _store_alloc(r->mvarName, NULL, totalSize);
   if (r->statePtr == NULL) {
     free(r);
+    free(locdata);
     return NULL;
   }
   r->dataPtr = ((void*)(r->statePtr)) + dataShift;
+  r->localDataPtr = locdata;
 
   // setup state
   MVarState s = (struct MVarState)
     { .isFull = 0
     , .pendingReaders = 0
     , .totalUsers = 1
-    , .dataSize = byteSize
+    , .storeSize = totalSize
     };
   *(r->statePtr) = s;
   pthread_mutexattr_init(&(s.mvMAttr));
 #ifndef NDEBUG
   pthread_mutexattr_settype(&(s.mvMAttr), PTHREAD_MUTEX_ERRORCHECK);
 #endif
-  // pthread_mutexattr_settype(&(s.mvMAttr), PTHREAD_MUTEX_ROBUST);
   pthread_mutexattr_setpshared(&(s.mvMAttr), PTHREAD_PROCESS_SHARED);
   pthread_mutex_init(&(s.mvMut), &(s.mvMAttr));
   pthread_condattr_init(&(s.condAttr));
@@ -122,9 +142,9 @@ MVar *mvar_lookup(const char *name) {
   if (m0 == MAP_FAILED) {
     return NULL;
   }
-  size_t dataShift = mvar_state_size64(),
-         storeSize = dataShift + ((MVarState*)m0)->dataSize;
-  HsPtr m = mremap(m0, 0, storeSize, MREMAP_MAYMOVE);
+  size_t dataShift = mvar_state_size64();
+  size_t totalSize = ((MVarState*)m0)->storeSize;
+  HsPtr m = mremap(m0, 0, totalSize, MREMAP_MAYMOVE);
   if (m == MAP_FAILED) {
     munmap(m0, sizeof(MVarState));
     return NULL;
@@ -132,88 +152,61 @@ MVar *mvar_lookup(const char *name) {
   // setup MVar struct
   MVar *r = malloc(sizeof(MVar));
   if (r == NULL) {
-    munmap(m, storeSize);
+    munmap(m, totalSize);
     return NULL;
   }
-  r->statePtr = (MVarState*)m;
-  r->dataPtr  = ((void*)(r->statePtr)) + mvar_state_size64();
-  strcpy(r->mvarName, name);
-  // update state
-  printf("lookup - locking\n");
-  int r0 = pthread_mutex_lock(&(r->statePtr->mvMut));
-  printf("lookup - locked, %d\n", r0);
-  if ( r->statePtr->totalUsers == 0 ) {
-    r0 = pthread_mutex_unlock(&(r->statePtr->mvMut));
-    printf("lookup - emergency unlocked, %d\n", r0);
-    munmap(m, storeSize);
+  void *locdata = malloc(totalSize - dataShift);
+  if (locdata == NULL) {
+    munmap(m, totalSize);
     free(r);
     return NULL;
   }
-  assert( r0 == 0 );
+  r->statePtr = (MVarState*)m;
+  r->dataPtr  = ((void*)(r->statePtr)) + dataShift;
+  r->localDataPtr = locdata;
+  strcpy(r->mvarName, name);
+  // update state
+  pthread_mutex_lock(&(r->statePtr->mvMut));
   r->statePtr->totalUsers++;
-  r0 = pthread_mutex_unlock(&(r->statePtr->mvMut));
-  printf("lookup - unlocked, %d\n", r0);
-  assert( r0 == 0 );
+  pthread_mutex_unlock(&(r->statePtr->mvMut));
 
   return r;
 }
 
 void mvar_destroy(MVar *mvar) {
-  printf("destroy - starting...\n");
-  int r = pthread_mutex_lock(&(mvar->statePtr->mvMut));
-  printf("destroy - locked, %d\n", r);
-  assert( r == 0 );
+  pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
+  pthread_cond_broadcast(&(mvar->statePtr->canPutC));
+  pthread_mutex_lock(&(mvar->statePtr->mvMut));
   int usersN = --(mvar->statePtr->totalUsers);
-  r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-  assert( r == 0 );
-  printf("destroy - unlocked, %d\n", r);
-  size_t storeSize = mvar->statePtr->dataSize + mvar_state_size64();
+  pthread_mutex_unlock(&(mvar->statePtr->mvMut));
   if (usersN > 0) {
-    // pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
-    // pthread_cond_broadcast(&(mvar->statePtr->canPutC));
-    printf("destroy... users left: %d\n", usersN);
-    munmap(mvar->statePtr, storeSize);
+    munmap(mvar->statePtr, mvar->statePtr->storeSize);
   } else {
-    printf("destroy... for real!\n");
     pthread_cond_destroy(&(mvar->statePtr->canTakeC));
     pthread_cond_destroy(&(mvar->statePtr->canPutC));
     pthread_condattr_destroy(&(mvar->statePtr->condAttr));
     pthread_mutex_destroy(&(mvar->statePtr->mvMut));
     pthread_mutexattr_destroy(&(mvar->statePtr->mvMAttr));
-    munmap(mvar->statePtr, storeSize);
+    munmap(mvar->statePtr, mvar->statePtr->storeSize);
     shm_unlink(mvar->mvarName);
   }
+  free(mvar->localDataPtr);
   free(mvar);
 }
 
 
-void mvar_take(MVar *mvar, void *localDataPtr) {
-  printf("take - entering\n");
-  // wait
+void mvar_takestart(MVar *mvar) {
   int r = pthread_mutex_lock(&(mvar->statePtr->mvMut));
   assert( r == 0 );
-  printf("take - locked, isFull: %d, pr %d\n", mvar->statePtr->isFull, mvar->statePtr->pendingReaders);
-  while ( !(mvar->statePtr->isFull) || (mvar->statePtr->pendingReaders > 0) ) {
-    printf("take - pthread_cond_wait iteration, isFull: %d, pr %d\n", mvar->statePtr->isFull, mvar->statePtr->pendingReaders);
+  while ( !(mvar->statePtr->isFull) ) {
     r = pthread_cond_wait(&(mvar->statePtr->canTakeC), &(mvar->statePtr->mvMut));
     assert( r == 0 );
   }
-  printf("take - copying\n");
-  // copy data
-  memcpy(localDataPtr, mvar->dataPtr, mvar->statePtr->dataSize);
-  // mark empty
-  mvar->statePtr->isFull = 0;
-  // wakeup at least one putter
-  printf("take - pthread_cond_signal\n");
-  r = pthread_cond_signal(&(mvar->statePtr->canPutC));
-  assert( r == 0 );
-  printf("take - unlocking\n");
-  r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-  assert( r == 0 );
-  printf("take - finished!\n");
+  pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
+  pthread_cond_broadcast(&(mvar->statePtr->canPutC));
 }
 
-int mvar_trytake(MVar *mvar, void *localDataPtr) {
+int mvar_trytakestart(MVar *mvar) {
   int r = pthread_mutex_lock(&(mvar->statePtr->mvMut));
   assert( r == 0 );
   if ( !(mvar->statePtr->isFull) ) {
@@ -225,87 +218,64 @@ int mvar_trytake(MVar *mvar, void *localDataPtr) {
     r = pthread_cond_wait(&(mvar->statePtr->canTakeC), &(mvar->statePtr->mvMut));
     assert( r == 0 );
   }
-  // copy data
-  memcpy(localDataPtr, mvar->dataPtr, mvar->statePtr->dataSize);
-  // mark empty
-  mvar->statePtr->isFull = 0;
-  r = pthread_cond_signal(&(mvar->statePtr->canPutC));
-  assert( r == 0 );
-  // wakeup at least one putter
-  r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-  assert( r == 0 );
   return 0;
 }
 
+void mvar_takeonsuccess(MVar *mvar) {
+  mvar->statePtr->isFull = 0;
+  // wakeup at least one putter
+  int r = pthread_cond_signal(&(mvar->statePtr->canPutC));
+  assert( r == 0 );
+  r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
+  assert( r == 0 );
+  pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
+  pthread_cond_broadcast(&(mvar->statePtr->canPutC));
+}
 
-void mvar_put(MVar *mvar, void *localDataPtr) {
-  printf("put - entering\n");
+void mvar_putstart(MVar *mvar) {
   int r = pthread_mutex_lock(&(mvar->statePtr->mvMut));
   assert( r == 0 );
-  printf("put - locked, isFull: %d\n", mvar->statePtr->isFull);
   while ( mvar->statePtr->isFull ) {
-    printf("put - pthread_cond_wait iteration, isFull: %d\n", mvar->statePtr->isFull);
     r = pthread_cond_wait(&(mvar->statePtr->canPutC), &(mvar->statePtr->mvMut));
     assert( r == 0 );
   }
-  printf("put - copying\n");
-  // copy data
-  memcpy(mvar->dataPtr, localDataPtr, mvar->statePtr->dataSize);
-  // mark full
-  mvar->statePtr->isFull = 1;
-  // wakeup all readers!
-  printf("put - pthread_cond_broadcast\n");
-  r = pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
-  assert( r == 0 );
-  printf("put - unlocking\n");
-  r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-  assert( r == 0 );
-  printf("put - finished!\n");
+  pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
+  pthread_cond_broadcast(&(mvar->statePtr->canPutC));
 }
 
-int mvar_tryput(MVar *mvar, void *localDataPtr) {
+int mvar_tryputstart(MVar *mvar) {
   int r = pthread_mutex_lock(&(mvar->statePtr->mvMut));
   assert( r == 0 );
   if ( mvar->statePtr->isFull ) {
     r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
     assert( r == 0 );
     return 1;
-  }
-  // copy data
-  memcpy(mvar->dataPtr, localDataPtr, mvar->statePtr->dataSize);
-  // mark full
+  } else
+    return 0;
+}
+
+void mvar_putonsuccess(MVar *mvar) {
   mvar->statePtr->isFull = 1;
   // wakeup all readers!
-  r = pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
+  int r = pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
   assert( r == 0 );
   r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
   assert( r == 0 );
-  return 0;
+  pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
+  pthread_cond_broadcast(&(mvar->statePtr->canPutC));
 }
 
-
-void mvar_read(MVar *mvar, void *localDataPtr) {
+void mvar_readstart(MVar *mvar) {
   int r = pthread_mutex_lock(&(mvar->statePtr->mvMut));
   assert( r == 0 );
-  // I am waiting!
   mvar->statePtr->pendingReaders++;
   while ( !(mvar->statePtr->isFull) ) {
     r = pthread_cond_wait(&(mvar->statePtr->canTakeC), &(mvar->statePtr->mvMut));
     assert( r == 0 );
   }
-  // copy data
-  memcpy(localDataPtr, mvar->dataPtr, mvar->statePtr->dataSize);
-  // the last reader should wakeup at least one taker
-  // Decrement the waiters counter and maybe wake up another taker
-  if ( (--(mvar->statePtr->pendingReaders)) == 0 ) {
-    r = pthread_cond_signal(&(mvar->statePtr->canTakeC));
-    assert( r == 0 );
-  }
-  r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-  assert( r == 0 );
 }
 
-int mvar_tryread(MVar *mvar, void *localDataPtr) {
+int mvar_tryreadstart(MVar *mvar) {
   int r = pthread_mutex_lock(&(mvar->statePtr->mvMut));
   assert( r == 0 );
   if ( !(mvar->statePtr->isFull) ) {
@@ -313,16 +283,30 @@ int mvar_tryread(MVar *mvar, void *localDataPtr) {
     assert( r == 0 );
     return 1;
   } else {
-    memcpy(localDataPtr, mvar->dataPtr, mvar->statePtr->dataSize);
-    r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-    assert( r == 0 );
+    mvar->statePtr->pendingReaders++;
     return 0;
   }
 }
 
+void mvar_readonsuccess(MVar *mvar) {
+  // the last reader should wakeup at least one taker
+  int r = 0;
+  if ( (--(mvar->statePtr->pendingReaders)) == 0 ) {
+    r = pthread_cond_signal(&(mvar->statePtr->canTakeC));
+    assert( r == 0 );
+  }
+  pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
+  pthread_cond_broadcast(&(mvar->statePtr->canPutC));
+  r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
+  assert( r == 0 );
+}
 
 void mvar_name(MVar *mvar, char * const name) {
   strcpy(name, mvar->mvarName);
+}
+
+void *mvar_dataptr(MVar *mvar) {
+  return mvar->dataPtr;
 }
 
 #endif

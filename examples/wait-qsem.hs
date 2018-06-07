@@ -13,7 +13,6 @@ import           System.Process.Typed
 import           Text.Read                       (readMaybe)
 
 
--- > stack bench interprocess:wait-qsem --benchmark-arguments='15'
 main :: IO ()
 main = do
   args <- getArgs

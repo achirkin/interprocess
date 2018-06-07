@@ -17,8 +17,6 @@ import           Data.IORef
 -- | Supply integer argument to a program to set the allocation size.
 ---  Number 10000 is default, corresponds to argound 800MB of memory and very fast
 --   Number 25000 corresponds to around 5GB of memory
---
--- > stack bench interprocess:concurrent-malloc --benchmark-arguments='25000'
 main :: IO ()
 main = do
   args <- getArgs

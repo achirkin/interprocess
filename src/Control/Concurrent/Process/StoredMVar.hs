@@ -18,7 +18,7 @@ import           Foreign.Ptr
 import           Foreign.SharedObjectName.Internal
 import           Foreign.Storable
 import           Foreign.Marshal.Alloc (alloca)
-import Control.Exception (evaluate, uninterruptibleMask_, mask_)
+import Control.Exception (evaluate, mask_) -- , uninterruptibleMask_, mask_)
 
 -- | Opaque implementation-dependent StoredMVar
 data StoredMVarT
@@ -80,8 +80,8 @@ mVarName (StoredMVar r _) = r
 --     are woken up. This is all up to implementation-dependent OS scheduling.
 --
 takeMVar :: Storable a => StoredMVar a -> Int -> IO a
-takeMVar (StoredMVar _ fp) i = eio $ withForeignPtr fp $ \p -> alloca $ \lp -> do
-    r <- mask_ $ c'mvar_take p lp $ fromIntegral i
+takeMVar (StoredMVar _ fp) i = mask_ $ eio $ withForeignPtr fp $ \p -> alloca $ \lp -> do
+    r <- c'mvar_take p lp $ fromIntegral i
     if r == 0
     then peek lp
     else do
@@ -116,9 +116,9 @@ takeMVar (StoredMVar _ fp) i = eio $ withForeignPtr fp $ \p -> alloca $ \lp -> d
 --     are woken up. This is all up to implementation-dependent OS scheduling.
 --
 putMVar :: Storable a => StoredMVar a -> a -> Int -> IO ()
-putMVar (StoredMVar _ fp) x i = eio $ withForeignPtr fp $ \p -> alloca $ \lp -> do
+putMVar (StoredMVar _ fp) x i = mask_ $ eio $ withForeignPtr fp $ \p -> alloca $ \lp -> do
     poke lp x
-    r <- mask_ $ c'mvar_put p lp $ fromIntegral i
+    r <- c'mvar_put p lp $ fromIntegral i
     if r == 0
     then return ()
     else do
@@ -168,16 +168,16 @@ checkNullPointer s k = do
 eio :: IO a -> IO a
 eio m = m >>= evaluate
 
-foreign import ccall interruptible "mvar_new"
+foreign import ccall unsafe "mvar_new"
   c'mvar_new :: CSize -> IO (Ptr StoredMVarT)
 
-foreign import ccall interruptible "mvar_lookup"
+foreign import ccall unsafe "mvar_lookup"
   c'mvar_lookup :: CString -> CInt -> IO (Ptr StoredMVarT)
 
 foreign import ccall unsafe "&mvar_destroy"
   p'mvar_destroy :: FunPtr (Ptr StoredMVarT -> IO ())
 
-foreign import ccall interruptible "mvar_name"
+foreign import ccall unsafe "mvar_name"
   c'mvar_name :: Ptr StoredMVarT -> CString -> IO ()
 
 

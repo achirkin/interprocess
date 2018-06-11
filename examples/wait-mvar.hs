@@ -2,7 +2,7 @@
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 module Main where
 
-import           Control.Concurrent                   (forkOS) --  (threadDelay)
+import           Control.Concurrent                   (forkOS, threadDelay)
 import           Control.Concurrent.Process.StoredMVar
 import qualified Control.Concurrent.MVar as Vanilla
 import           Control.Concurrent.QSemN
@@ -35,7 +35,8 @@ runA n = do
     execFile <- getExecutablePath
     args <- getArgs
     let processBConfig = setStdin createPipe
-                       $ proc execFile ("slave":args)
+                       $ proc execFile ("slave":"+RTS":"-N4":"-RTS":
+                                        args)
 
     putStrLn "[A] Started."
     mVar <- do
@@ -154,7 +155,15 @@ runB = do
         --   v <- takeMVar mVar
         --   putStrLn $ "[B] (" ++ show i ++ ") Take: " ++ show v
     putStrLn $ "[" ++ show i ++ "] Finished successfully"
-  Vanilla.takeMVar rr
+  let go k = do
+        mr <- Vanilla.tryTakeMVar rr
+        case mr of
+          Nothing -> do
+            threadDelay (1000000 * k)
+            print $ "[" ++ show i ++ "] Waiting to finish " ++ show k
+            go (k * 2)
+          Just () -> return ()
+  go 1
   putStrLn $ "[" ++ show i ++ "] Finished really successfully"
 
 withNProcesses :: Int

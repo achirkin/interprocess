@@ -1,6 +1,14 @@
 name:                interprocess
 version:             0.1.0.0
 author:              Artem Chirkin
+description:
+  the following locks one of the running processes sooner or later (usually, after 1-5 iterations)
+  > while true; do reset && clear && rm -rf /dev/shm/HsIPC.* && stack build && stack exec wait-mvar; done
+  process-taker usually deadlocks on something like this:
+  [i] mvar_take 1010 entering, errno 0
+  [i] mvar_take 1010 locked, isFull: 0, errno 0
+  [i] mvar_take 1010 will wait 50, isFull 0, errno 0
+
 maintainer:          chirkin@arch.ethz.ch
 copyright:           (c) 2018 Artem Chirkin
 category:            system

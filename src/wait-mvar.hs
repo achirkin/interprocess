@@ -32,7 +32,7 @@ main = do
   args <- getArgs
   let (isSlaveL, remargs) = partition ("slave"==) args
       isSlave = not $ null isSlaveL
-      n = fromMaybe 4 . getFirst $ foldMap (First . readMaybe) remargs
+      n = fromMaybe 2 . getFirst $ foldMap (First . readMaybe) remargs
   if isSlave
   then runB
   else runA n
@@ -130,7 +130,7 @@ withNProcesses n conf k = do
           flip finally (signalQSemN created 1) $
             Vanilla.modifyMVar_ procs (pure . (p:))
           waitQSemN done 1
-          waitExitCode p >>= putStrLn . ((show i ++ "-th process finished: " ) ++) . show
+          waitExitCode p >>= putStrLn . ((show (n+1-i) ++ "-th process finished: " ) ++) . show
 
 
   finally ( waitQSemN created n >> Vanilla.takeMVar procs >>= k ) $ do

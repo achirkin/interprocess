@@ -67,7 +67,7 @@ size_t mvar_state_size64() {
   return (r == 0 ? x : (x + 64 - r)) + 256;
 }
 
-HsPtr _store_alloc(const char *memBlockName, void **privateStoreHandle, size_t size) {
+HsPtr _store_alloc(const char *memBlockName, size_t size) {
   int memFd = shm_open(memBlockName, O_CREAT | O_RDWR, S_IRWXU);
   if (memFd < 0) {
     return NULL;
@@ -89,18 +89,6 @@ HsPtr _store_alloc(const char *memBlockName, void **privateStoreHandle, size_t s
   return r;
 }
 
-// failures of system calls are ignored
-void _store_free( const char *memBlockName, void **privateStoreHandle, HsPtr addr
-                , size_t size, _Bool unlinkToo) {
-  if(addr != 0){
-    munmap(addr, size);
-  }
-  if(unlinkToo && memBlockName[0] != '\0') {
-    shm_unlink(memBlockName);
-  }
-}
-
-
 MVar *mvar_new(size_t byteSize) {
   size_t dataShift = mvar_state_size64();
   size_t totalSize = dataShift + byteSize;
@@ -111,7 +99,7 @@ MVar *mvar_new(size_t byteSize) {
   genSharedObjectName(r->mvarName);
 
   // allocate memory
-  r->statePtr = (MVarState*) _store_alloc(r->mvarName, NULL, totalSize);
+  r->statePtr = (MVarState*) _store_alloc(r->mvarName, totalSize);
   if (r->statePtr == NULL) {
     free(r);
     return NULL;
@@ -131,7 +119,8 @@ MVar *mvar_new(size_t byteSize) {
   int r0 = sem_init(&(s.totalUsers), 1, 0);
   if ( r0 != 0 ) {
     printf("new - error, %d\n", r0);
-    _store_free(r->mvarName, NULL, &s, totalSize, 1 );
+    munmap(&s, totalSize);
+    shm_unlink(r->mvarName);
     free(r);
     return NULL;
   }

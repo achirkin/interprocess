@@ -1,7 +1,26 @@
-#include "SharedObjectName.h"
 #include "HsFFI.h"
 #include <stdlib.h>
-#include <assert.h>
+#include <fcntl.h>
+#include <semaphore.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <time.h>
+#include <errno.h>
+#include <signal.h>
+#include <unistd.h>
+#include <limits.h>
+
+
+#define SHARED_OBJECT_NAME_LENGTH 32
+
+
+typedef char SharedObjectName[SHARED_OBJECT_NAME_LENGTH];
+void genSharedObjectName(char * const name);
 
 typedef struct MVar MVar;
 
@@ -11,31 +30,9 @@ void  mvar_destroy(MVar *mvar);
 void  mvar_name(MVar *mvar, char * const name);
 
 int  mvar_take(MVar *mvar, void *localDataPtr, int takeId);
-int  mvar_trytake(MVar *mvar, void *localDataPtr);
 int  mvar_put(MVar *mvar, void *localDataPtr, int opId);
-int  mvar_tryput(MVar *mvar, void *localDataPtr);
-void mvar_read(MVar *mvar, void *localDataPtr);
-int  mvar_tryread(MVar *mvar, void *localDataPtr);
 
 
-
-#if defined(WIN32) || defined(_WIN32) || defined(__WIN32) || defined(mingw32_HOST_OS)
-
-
-#else
-#include "SharedPtr.h"
-#include <fcntl.h>           /* For O_* constants */
-#include <semaphore.h>
-#include <string.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <sys/time.h>
-#include <unistd.h>
-
-#include <stdio.h>
-#include <time.h>
-#include <errno.h>
-#include <signal.h>
 
 typedef struct MVarState {
   int                 isFull;
@@ -69,6 +66,40 @@ size_t mvar_state_size64() {
   size_t r = x % 64;
   return (r == 0 ? x : (x + 64 - r)) + 256;
 }
+
+HsPtr _store_alloc(const char *memBlockName, void **privateStoreHandle, size_t size) {
+  int memFd = shm_open(memBlockName, O_CREAT | O_RDWR, S_IRWXU);
+  if (memFd < 0) {
+    return NULL;
+  }
+  int res = ftruncate(memFd, size);
+  if (res != 0) {
+    shm_unlink(memBlockName);
+    return NULL;
+  }
+  HsPtr r = mmap( NULL
+                , size
+                , PROT_READ | PROT_WRITE | PROT_EXEC
+                , MAP_SHARED
+                , memFd, 0);
+  if (r == MAP_FAILED) {
+    shm_unlink(memBlockName);
+    return NULL;
+  }
+  return r;
+}
+
+// failures of system calls are ignored
+void _store_free( const char *memBlockName, void **privateStoreHandle, HsPtr addr
+                , size_t size, _Bool unlinkToo) {
+  if(addr != 0){
+    munmap(addr, size);
+  }
+  if(unlinkToo && memBlockName[0] != '\0') {
+    shm_unlink(memBlockName);
+  }
+}
+
 
 MVar *mvar_new(size_t byteSize) {
   size_t dataShift = mvar_state_size64();
@@ -188,7 +219,6 @@ MVar *mvar_lookup(const char *name, int givenId) {
   mvar->mvarId = givenId;
   strcpy(mvar->mvarName, name);
   // update state
-  // printf("lookup - sem_post\n");
   r = sem_post(&(mvar->statePtr->totalUsers));
   if ( r != 0 ) {
     printf("[%d] lookup - sem_post failed, r = %d, errno = %d\n", givenId, r, errno);
@@ -196,7 +226,6 @@ MVar *mvar_lookup(const char *name, int givenId) {
     free(mvar);
     return NULL;
   }
-  // printf("lookup - finished!\n");
   printf("[%d] lookup - success; errno: %d; name: %s.\n", mvar->mvarId, errno, mvar->mvarName);
   return mvar;
 }
@@ -271,14 +300,6 @@ int mvar_take(MVar *mvar, void *localDataPtr, int opId) {
     return 1;
   }
   printf( "[%d] mvar_take %d locked, isFull: %d, errno %d\n", mvar->mvarId, opId, mvar->statePtr->isFull, errno);
-  uint8_t *buf = (uint8_t*)(mvar->statePtr);
-  for (int i = 0; i < 272; i++)
-  {
-      // if (i > 0) printf(":");
-      if (i % 64 == 0 && i > 0) printf("\n");
-      printf("%02X", buf[i]);
-  }
-  printf("\n");
   timeInMs = defWaitTimeInMs;
   while ( !(mvar->statePtr->isFull) ) {
     r = pthread_cond_signal(&(mvar->statePtr->canPutC));
@@ -322,48 +343,6 @@ int mvar_take(MVar *mvar, void *localDataPtr, int opId) {
   return 0;
 }
 
-// int mvar_trytake(MVar *mvar, void *localDataPtr) {
-//   printf("trytake - entering\n");
-//   int r = pthread_mutex_lock(&(mvar->statePtr->mvMut));
-//   assert( r == 0 );
-//   printf("take - locked, isFull: %d, pr %d\n", mvar->statePtr->isFull, mvar->statePtr->pendingReaders);
-//   if ( !(mvar->statePtr->isFull) ) {
-//     pthread_cond_signal(&(mvar->statePtr->canPutC));
-//     r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-//     assert( r == 0 );
-//     return 1;
-//   }
-//   while ( mvar->statePtr->pendingReaders > 0 ) {
-//     if ( !(mvar->statePtr->isFull) ) {
-//       pthread_cond_signal(&(mvar->statePtr->canPutC));
-//       r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-//       assert( r == 0 );
-//       return 1;
-//     } else {
-//       pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
-//       assert( r == 0 );
-//     }
-//     printf("trytake - pthread_cond_wait iteration, isFull: %d, pr %d\n", mvar->statePtr->isFull, mvar->statePtr->pendingReaders);
-//     r = pthread_cond_wait(&(mvar->statePtr->canTakeC), &(mvar->statePtr->mvMut));
-//     assert( r == 0 );
-//   }
-//   printf("trytake - copying\n");
-//   // copy data
-//   memcpy(localDataPtr, mvar->dataPtr, mvar->statePtr->dataSize);
-//   // mark empty
-//   mvar->statePtr->isFull = 0;
-//   printf("trytake - pthread_cond_signal\n");
-//   // wakeup at least one putter
-//   r = pthread_cond_signal(&(mvar->statePtr->canPutC));
-//   assert( r == 0 );
-//   printf("trytake - unlocking\n");
-//   r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-//   assert( r == 0 );
-//   printf("trytake - finished!\n");
-//   return 0;
-// }
-
-
 
 int mvar_put(MVar *mvar, void *localDataPtr, int opId) {
   long timeInMs = defWaitTimeInMs;
@@ -382,14 +361,6 @@ int mvar_put(MVar *mvar, void *localDataPtr, int opId) {
     return 1;
   }
   printf( "[%d] mvar_put %d locked, isFull: %d\n", mvar->mvarId, opId, mvar->statePtr->isFull);
-  uint8_t *buf = (uint8_t*)(mvar->statePtr);
-  for (int i = 0; i < 272; i++)
-  {
-      // if (i > 0) printf(":");
-      if (i % 64 == 0 && i > 0) printf("\n");
-      printf("%02X", buf[i]);
-  }
-  printf("\n");
   timeInMs = defWaitTimeInMs;
   while ( mvar->statePtr->isFull ) {
     r = pthread_cond_signal(&(mvar->statePtr->canTakeC));
@@ -433,76 +404,48 @@ int mvar_put(MVar *mvar, void *localDataPtr, int opId) {
   return 0;
 }
 
-// int mvar_tryput(MVar *mvar, void *localDataPtr) {
-//   int r = pthread_mutex_lock(&(mvar->statePtr->mvMut));
-//   assert( r == 0 );
-//   if ( mvar->statePtr->isFull ) {
-//     r = pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
-//     assert( r == 0 );
-//     r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-//     assert( r == 0 );
-//     return 1;
-//   }
-//   // copy data
-//   memcpy(mvar->dataPtr, localDataPtr, mvar->statePtr->dataSize);
-//   // mark full
-//   mvar->statePtr->isFull = 1;
-//   // wakeup all readers!
-//   r = pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
-//   assert( r == 0 );
-//   r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-//   assert( r == 0 );
-//   return 0;
-// }
-
-
-// void mvar_read(MVar *mvar, void *localDataPtr) {
-//   int r = pthread_mutex_lock(&(mvar->statePtr->mvMut));
-//   assert( r == 0 );
-//   // I am waiting!
-//   mvar->statePtr->pendingReaders++;
-//   while ( !(mvar->statePtr->isFull) ) {
-//     r = pthread_cond_signal(&(mvar->statePtr->canPutC));
-//     assert( r == 0 );
-//     r = pthread_cond_wait(&(mvar->statePtr->canTakeC), &(mvar->statePtr->mvMut));
-//     assert( r == 0 );
-//   }
-//   // copy data
-//   memcpy(localDataPtr, mvar->dataPtr, mvar->statePtr->dataSize);
-//   // the last reader should wakeup at least one taker
-//   // Decrement the waiters counter and maybe wake up another taker
-//   if ( (--(mvar->statePtr->pendingReaders)) == 0 ) {
-//     r = pthread_cond_signal(&(mvar->statePtr->canTakeC));
-//     assert( r == 0 );
-//   }
-//   r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-//   assert( r == 0 );
-// }
-//
-// int mvar_tryread(MVar *mvar, void *localDataPtr) {
-//   int r = pthread_mutex_lock(&(mvar->statePtr->mvMut));
-//   assert( r == 0 );
-//   if ( !(mvar->statePtr->isFull) ) {
-//     r = pthread_cond_signal(&(mvar->statePtr->canPutC));
-//     assert( r == 0 );
-//     r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-//     assert( r == 0 );
-//     return 1;
-//   } else {
-//     memcpy(localDataPtr, mvar->dataPtr, mvar->statePtr->dataSize);
-//     if ( (mvar->statePtr->pendingReaders) == 0 ) {
-//       r = pthread_cond_signal(&(mvar->statePtr->canTakeC));
-//       assert( r == 0 );
-//     }
-//     r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-//     assert( r == 0 );
-//     return 0;
-//   }
-// }
 
 
 void mvar_name(MVar *mvar, char * const name) {
   strcpy(name, mvar->mvarName);
 }
 
-#endif
+
+
+
+static int _unique_seed = 0;
+static int _my_pid = 0;
+static const char keytable[]
+  = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+static const char prefix[]
+  = "/HsIPC.";
+#define keytableLength 62
+#define prefixLength 7
+
+
+void genSharedObjectName(char * const name) {
+  // init this once per process
+  if(_unique_seed == 0){
+    srand(time(NULL));
+    _my_pid = (int)getpid();
+  }
+  // clear variable
+  memset(name, 0, sizeof(SharedObjectName));
+  memcpy(name, prefix, sizeof(prefix));
+  // put three chars at a time
+  int c = INT_MAX, i = prefixLength;
+  div_t randV = { .quot = rand()  ^ 0x19a628f6
+                , .rem  = 0 }
+      , globV = { .quot = _my_pid ^ 0x003772a1
+                , .rem  = 0 }
+      , procV = { .quot = (_unique_seed++) ^ 0x028ab100
+                , .rem  = 0 };
+  while( (c = c / keytableLength) > 0 && i < (SHARED_OBJECT_NAME_LENGTH-3) ) {
+    randV = div(randV.quot, keytableLength);
+    globV = div(globV.quot, keytableLength);
+    procV = div(procV.quot, keytableLength);
+    name[i++] = keytable[randV.rem];
+    name[i++] = keytable[globV.rem];
+    name[i++] = keytable[procV.rem];
+  }
+}

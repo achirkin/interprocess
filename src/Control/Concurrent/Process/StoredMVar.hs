@@ -1,10 +1,12 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE Strict #-}
+{-# LANGUAGE InterruptibleFFI #-}
 module Control.Concurrent.Process.StoredMVar
   ( StoredMVar (), mVarName
   , newEmptyMVar, newMVar, lookupMVar
-  , takeMVar, putMVar, readMVar
-  , tryTakeMVar, tryPutMVar, tryReadMVar
+  , takeMVar, putMVar
+  -- , readMVar
+  -- , tryTakeMVar, tryPutMVar, tryReadMVar
   ) where
 
 import           Data.Data                         (Typeable)
@@ -16,7 +18,7 @@ import           Foreign.Ptr
 import           Foreign.SharedObjectName.Internal
 import           Foreign.Storable
 import           Foreign.Marshal.Alloc (alloca)
-import Control.Exception (evaluate)
+import Control.Exception (evaluate, uninterruptibleMask_, mask_)
 
 -- | Opaque implementation-dependent StoredMVar
 data StoredMVarT
@@ -36,7 +38,7 @@ data StoredMVar a
 -- | Create a 'StoredMVar' which is initially empty.
 newEmptyMVar :: forall a . Storable a => IO (StoredMVar a)
 newEmptyMVar = eio $ do
-    mvar <- checkNullPointer "newEmptyMVar"
+    mvar <- eio . checkNullPointer "newEmptyMVar"
           . c'mvar_new . fromIntegral $ sizeOf (undefined :: a)
     n <- newEmptySOName
     unsafeWithSOName n $ c'mvar_name mvar
@@ -47,14 +49,15 @@ newEmptyMVar = eio $ do
 newMVar :: Storable a => a -> IO (StoredMVar a)
 newMVar value = do
     x <- newEmptyMVar
-    putMVar x value
+    putMVar x value 0
     return x
 
 
 -- | Find a `StoredMVar` created in another process ot thread by its reference.
-lookupMVar :: Storable a => SOName (StoredMVar a) -> IO (StoredMVar a)
-lookupMVar n = eio $ do
-    mvar <- unsafeWithSOName n $ checkNullPointer "lookupMVar" . c'mvar_lookup
+lookupMVar :: Storable a => SOName (StoredMVar a) -> Int -> IO (StoredMVar a)
+lookupMVar n i = eio $ do
+    mvar <- eio . unsafeWithSOName n $ checkNullPointer "lookupMVar"
+     . flip c'mvar_lookup (fromIntegral i)
     StoredMVar n <$> newForeignPtr p'mvar_destroy mvar
 {-# NOINLINE lookupMVar #-}
 
@@ -76,25 +79,29 @@ mVarName (StoredMVar r _) = r
 --   * The library makes no guarantees about the order in which processes
 --     are woken up. This is all up to implementation-dependent OS scheduling.
 --
-takeMVar :: Storable a => StoredMVar a -> IO a
-takeMVar (StoredMVar _ fp) = eio $ withForeignPtr fp $ \p -> alloca $ \lp -> do
-    c'mvar_take p lp
-    peek lp
+takeMVar :: Storable a => StoredMVar a -> Int -> IO a
+takeMVar (StoredMVar _ fp) i = eio $ withForeignPtr fp $ \p -> alloca $ \lp -> do
+    r <- mask_ $ c'mvar_take p lp $ fromIntegral i
+    if r == 0
+    then peek lp
+    else do
+      putStrLn $ "takeMVar failed with code " ++ show r
+      throwErrno $ "takeMVar failed with code " ++ show r
 {-# NOINLINE takeMVar #-}
 
 
--- | Atomically read the contents of an 'StoredMVar'.  If the 'StoredMVar' is
---   currently empty, 'readMVar' will wait until its full.
---   'readMVar' is guaranteed to receive the next 'putMVar'.
---
---  'readMVar' is multiple-wakeup, so when multiple readers are
---    blocked on an 'MVar', all of them are woken up at the same time.
---
-readMVar :: Storable a => StoredMVar a -> IO a
-readMVar (StoredMVar _ fp) = eio $ withForeignPtr fp $ \p -> alloca $ \lp -> do
-    c'mvar_read p lp
-    peek lp
-{-# NOINLINE readMVar #-}
+-- -- | Atomically read the contents of an 'StoredMVar'.  If the 'StoredMVar' is
+-- --   currently empty, 'readMVar' will wait until its full.
+-- --   'readMVar' is guaranteed to receive the next 'putMVar'.
+-- --
+-- --  'readMVar' is multiple-wakeup, so when multiple readers are
+-- --    blocked on an 'MVar', all of them are woken up at the same time.
+-- --
+-- readMVar :: Storable a => StoredMVar a -> IO a
+-- readMVar (StoredMVar _ fp) = eio $ withForeignPtr fp $ \p -> alloca $ \lp -> do
+--     c'mvar_read p lp
+--     peek lp
+-- {-# NOINLINE readMVar #-}
 
 
 -- | Put a value into an 'StoredMVar'.  If the 'StoredMVar' is currently full,
@@ -108,43 +115,48 @@ readMVar (StoredMVar _ fp) = eio $ withForeignPtr fp $ \p -> alloca $ \lp -> do
 --   * The library makes no guarantees about the order in which processes
 --     are woken up. This is all up to implementation-dependent OS scheduling.
 --
-putMVar :: Storable a => StoredMVar a -> a -> IO ()
-putMVar (StoredMVar _ fp) x = eio $ withForeignPtr fp $ \p -> alloca $ \lp -> do
+putMVar :: Storable a => StoredMVar a -> a -> Int -> IO ()
+putMVar (StoredMVar _ fp) x i = eio $ withForeignPtr fp $ \p -> alloca $ \lp -> do
     poke lp x
-    c'mvar_put p lp
+    r <- mask_ $ c'mvar_put p lp $ fromIntegral i
+    if r == 0
+    then return ()
+    else do
+      putStrLn $ "putMVar failed with code " ++ show r
+      throwErrno $ "putMVar failed with code " ++ show r
 {-# NOINLINE putMVar #-}
 
--- | A non-blocking version of 'takeMVar'.  The 'tryTakeMVar' function
---   returns immediately, with 'Nothing' if the 'StoredMVar' was empty, or
---   @'Just' a@ if the 'StoredMVar' was full with contents @a@.
---   After 'tryTakeMVar', the 'StoredMVar' is left empty.
-tryTakeMVar :: Storable a => StoredMVar a -> IO (Maybe a)
-tryTakeMVar (StoredMVar _ fp) = eio $ withForeignPtr fp $ \p -> alloca $ \lp -> do
-    r <- c'mvar_trytake p lp
-    if r == 0 then Just <$> peek lp
-              else return Nothing
-
-
--- | A non-blocking version of 'readMVar'.
---   The 'tryReadMVar' function
---   returns immediately, with 'Nothing' if the 'StoredMVar' was empty, or
---   @'Just' a@ if the 'StoredMVar' was full with contents @a@.
+-- -- | A non-blocking version of 'takeMVar'.  The 'tryTakeMVar' function
+-- --   returns immediately, with 'Nothing' if the 'StoredMVar' was empty, or
+-- --   @'Just' a@ if the 'StoredMVar' was full with contents @a@.
+-- --   After 'tryTakeMVar', the 'StoredMVar' is left empty.
+-- tryTakeMVar :: Storable a => StoredMVar a -> IO (Maybe a)
+-- tryTakeMVar (StoredMVar _ fp) = eio $ withForeignPtr fp $ \p -> alloca $ \lp -> do
+--     r <- c'mvar_trytake p lp
+--     if r == 0 then Just <$> peek lp
+--               else return Nothing
 --
-tryReadMVar :: Storable a => StoredMVar a -> IO (Maybe a)
-tryReadMVar (StoredMVar _ fp) = eio $ withForeignPtr fp $ \p -> alloca $ \lp -> do
-    r <- c'mvar_tryread p lp
-    if r == 0 then Just <$> peek lp
-              else return Nothing
-
--- | A non-blocking version of 'putMVar'.
---   The 'tryPutMVar' function
---   attempts to put the value @a@ into the 'StoredMVar', returning 'True' if
---   it was successful, or 'False' otherwise.
-tryPutMVar  :: Storable a => StoredMVar a -> a -> IO Bool
-tryPutMVar (StoredMVar _ fp) x = eio $ withForeignPtr fp $ \p -> alloca $ \lp -> do
-    poke lp x
-    r <- c'mvar_tryput p lp
-    return $ r == 0
+--
+-- -- | A non-blocking version of 'readMVar'.
+-- --   The 'tryReadMVar' function
+-- --   returns immediately, with 'Nothing' if the 'StoredMVar' was empty, or
+-- --   @'Just' a@ if the 'StoredMVar' was full with contents @a@.
+-- --
+-- tryReadMVar :: Storable a => StoredMVar a -> IO (Maybe a)
+-- tryReadMVar (StoredMVar _ fp) = eio $ withForeignPtr fp $ \p -> alloca $ \lp -> do
+--     r <- c'mvar_tryread p lp
+--     if r == 0 then Just <$> peek lp
+--               else return Nothing
+--
+-- -- | A non-blocking version of 'putMVar'.
+-- --   The 'tryPutMVar' function
+-- --   attempts to put the value @a@ into the 'StoredMVar', returning 'True' if
+-- --   it was successful, or 'False' otherwise.
+-- tryPutMVar  :: Storable a => StoredMVar a -> a -> IO Bool
+-- tryPutMVar (StoredMVar _ fp) x = eio $ withForeignPtr fp $ \p -> alloca $ \lp -> do
+--     poke lp x
+--     r <- c'mvar_tryput p lp
+--     return $ r == 0
 
 checkNullPointer :: String -> IO (Ptr a) -> IO (Ptr a)
 checkNullPointer s k = do
@@ -156,28 +168,28 @@ checkNullPointer s k = do
 eio :: IO a -> IO a
 eio m = m >>= evaluate
 
-foreign import ccall unsafe "mvar_new"
+foreign import ccall interruptible "mvar_new"
   c'mvar_new :: CSize -> IO (Ptr StoredMVarT)
 
-foreign import ccall unsafe "mvar_lookup"
-  c'mvar_lookup :: CString -> IO (Ptr StoredMVarT)
+foreign import ccall interruptible "mvar_lookup"
+  c'mvar_lookup :: CString -> CInt -> IO (Ptr StoredMVarT)
 
 foreign import ccall unsafe "&mvar_destroy"
   p'mvar_destroy :: FunPtr (Ptr StoredMVarT -> IO ())
 
-foreign import ccall unsafe "mvar_name"
+foreign import ccall interruptible "mvar_name"
   c'mvar_name :: Ptr StoredMVarT -> CString -> IO ()
 
 
-foreign import ccall unsafe "mvar_take"
-  c'mvar_take :: Ptr StoredMVarT -> Ptr a -> IO ()
-foreign import ccall unsafe "mvar_trytake"
-  c'mvar_trytake :: Ptr StoredMVarT -> Ptr a -> IO CInt
-foreign import ccall unsafe "mvar_put"
-  c'mvar_put :: Ptr StoredMVarT -> Ptr a -> IO ()
-foreign import ccall unsafe "mvar_tryput"
-  c'mvar_tryput :: Ptr StoredMVarT -> Ptr a -> IO CInt
-foreign import ccall unsafe "mvar_read"
-  c'mvar_read :: Ptr StoredMVarT -> Ptr a -> IO ()
-foreign import ccall unsafe "mvar_tryread"
-  c'mvar_tryread :: Ptr StoredMVarT -> Ptr a -> IO CInt
+foreign import ccall interruptible "mvar_take"
+  c'mvar_take :: Ptr StoredMVarT -> Ptr a -> CInt -> IO CInt
+-- foreign import ccall unsafe "mvar_trytake"
+--   c'mvar_trytake :: Ptr StoredMVarT -> Ptr a -> IO CInt
+foreign import ccall interruptible "mvar_put"
+  c'mvar_put :: Ptr StoredMVarT -> Ptr a -> CInt -> IO CInt
+-- foreign import ccall unsafe "mvar_tryput"
+--   c'mvar_tryput :: Ptr StoredMVarT -> Ptr a -> IO CInt
+-- foreign import ccall unsafe "mvar_read"
+--   c'mvar_read :: Ptr StoredMVarT -> Ptr a -> IO ()
+-- foreign import ccall unsafe "mvar_tryread"
+--   c'mvar_tryread :: Ptr StoredMVarT -> Ptr a -> IO CInt

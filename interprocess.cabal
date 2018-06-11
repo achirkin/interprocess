@@ -71,6 +71,7 @@ executable concurrent-malloc
                        , typed-process >= 0.2
                        , interprocess
     ghc-options:         -threaded -Wall
+    cc-options:          -lpthread -pthread
 
 executable wait-qsem
     if !flag(examples)
@@ -93,3 +94,4 @@ executable wait-mvar
                        , typed-process >= 0.2
                        , interprocess
     ghc-options:         -threaded -Wall
+    cc-options:          -lpthread -pthread

@@ -45,7 +45,7 @@ HsPtr _store_alloc(const char *memBlockName, void **privateStoreHandle, size_t s
   }
   HsPtr r = mmap( NULL
                 , size
-                , PROT_READ | PROT_WRITE
+                , PROT_READ | PROT_WRITE | PROT_EXEC
                 , MAP_SHARED
                 , memFd, 0);
   if (r == MAP_FAILED) {

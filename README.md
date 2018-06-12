@@ -5,7 +5,7 @@ Haskell + C code example with a bug that makes some processes to hang indefinite
 #### Story
 
 I tried to implement Haskell `Control.Concurrent.MVar` that resides in shared memory
-and communicating between allows multiple independent processes/programs using POSIX functionality.
+and allows communicating between multiple independent processes/programs using POSIX functionality.
 `MVar` is a mutable box, that can be empty or full; `putMVar` waits the box to be empty and copies data to it;
 `takeMVar` waits the box to be full and copies data from it.
 At some point, I got a lot of unpredictable deadlocks and tried to simplify the code to pinpoint the troubling part.

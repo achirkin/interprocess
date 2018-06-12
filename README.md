@@ -51,13 +51,4 @@ At the current stage, I removed all code that is not used to replicate the probl
  ```
  Which indicates the process `[i]` never goes past line [302](https://github.com/achirkin/interprocess/blob/mvar-fail/src/StoredMVar.c#L302).
  
- 
- 
- 
- 
- 
- 
- 
- 
- 
- 
+ Tested on a few versions of Ubuntu x64 (17.10+)

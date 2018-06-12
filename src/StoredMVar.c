@@ -64,7 +64,7 @@ typedef struct MVar {
 size_t mvar_state_size64() {
   size_t x = sizeof(MVarState);
   size_t r = x % 64;
-  return (r == 0 ? x : (x + 64 - r)) + 256;
+  return r == 0 ? x : (x + 64 - r);
 }
 
 HsPtr _store_alloc(const char *memBlockName, size_t size) {

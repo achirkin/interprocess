@@ -73,68 +73,48 @@ size_t mvar_state_size64() {
 MVar *mvar_new(size_t byteSize) {
   size_t dataShift = mvar_state_size64();
   size_t totalSize = dataShift + byteSize;
-  MVar *r = malloc(sizeof(MVar));
-  if (r == NULL) {
+  MVar *mvar = malloc(sizeof(MVar));
+  if (mvar == NULL) {
     return NULL;
   }
-  genSharedObjectName(r->mvarName);
+  genSharedObjectName(mvar->mvarName);
 
   // allocate memory
-  r->statePtr = (MVarState*) _store_alloc(r->mvarName, NULL, totalSize);
-  if (r->statePtr == NULL) {
-    free(r);
+  mvar->statePtr = (MVarState*) _store_alloc(mvar->mvarName, NULL, totalSize);
+  if (mvar->statePtr == NULL) {
+    free(mvar);
     return NULL;
   }
-  r->dataPtr = ((void*)(r->statePtr)) + dataShift;
-  r->mvarId  = 0;
+  mvar->dataPtr = ((void*)(mvar->statePtr)) + dataShift;
+  mvar->mvarId  = 0;
 
   // setup state
-  MVarState s = (struct MVarState)
+  *(mvar->statePtr) = (struct MVarState)
     { .isFull = 0
     , .pendingReaders = 0
     , .dataSize = byteSize
     };
-  *(r->statePtr) = s;
 
   printf("new - init...\n");
-  int r0 = sem_init(&(s.totalUsers), 1, 0);
-  if ( r0 != 0 ) {
-    printf("new - error, %d\n", r0);
-    _store_free(r->mvarName, NULL, &s, totalSize, 1 );
-    free(r);
+  int r = 0;
+  r = sem_init(&(mvar->statePtr->totalUsers), 1, 0);
+  if ( r != 0 ) {
+    printf("new - error, %d\n", r);
+    _store_free(mvar->mvarName, NULL, mvar->statePtr, totalSize, 1 );
+    free(mvar);
     return NULL;
   }
 
-  int c = pthread_mutexattr_init(&(s.mvMAttr));
-  if ( c != 0 )
-    printf( "new pthread_mutexattr_init(&(s.mvMAttr)) broke, %d\n", c );
-#ifndef NDEBUG
-  c = pthread_mutexattr_settype(&(s.mvMAttr), PTHREAD_MUTEX_ERRORCHECK);
-  if ( c != 0 )
-    printf( "new pthread_mutexattr_settype(&(s.mvMAttr) broke, %d\n", c );
-#endif
-  // pthread_mutexattr_settype(&(s.mvMAttr), PTHREAD_MUTEX_ROBUST);
-  c = pthread_mutexattr_setpshared(&(s.mvMAttr), PTHREAD_PROCESS_SHARED);
-  if ( c != 0 )
-    printf( "new pthread_mutexattr_setpshared(&(s.mvMAttr) broke, %d\n", c );
-  c = pthread_mutex_init(&(s.mvMut), &(s.mvMAttr));
-  if ( c != 0 )
-    printf( "new pthread_mutex_init(&(s.mvMut), &(s.mvMAttr)) broke, %d\n", c );
-  c = pthread_condattr_init(&(s.condAttr));
-  if ( c != 0 )
-    printf( "new pthread_condattr_init(&(s.condAttr)) broke, %d\n", c );
-  c = pthread_condattr_setpshared(&(s.condAttr), PTHREAD_PROCESS_SHARED);
-  if ( c != 0 )
-    printf( "new pthread_condattr_setpshared(&(s.condAttr) broke, %d\n", c );
-  c = pthread_cond_init(&(s.canPutC), &(s.condAttr));
-  if ( c != 0 )
-    printf( "new pthread_cond_init(&(s.canPutC) broke, %d\n", c );
-  c = pthread_cond_init(&(s.canTakeC), &(s.condAttr));
-  if ( c != 0 )
-    printf( "new pthread_cond_init(&(s.canTakeC) broke, %d\n", c );
-  printf("new - finished!\n");
+  r = pthread_mutexattr_init(&(mvar->statePtr->mvMAttr));
+  //r = pthread_mutexattr_settype(&(mvar->statePtr->mvMAttr), PTHREAD_MUTEX_ERRORCHECK);
+  r = pthread_mutexattr_setpshared(&(mvar->statePtr->mvMAttr), PTHREAD_PROCESS_SHARED);
+  r = pthread_mutex_init(&(mvar->statePtr->mvMut), &(mvar->statePtr->mvMAttr));
+  r = pthread_condattr_init(&(mvar->statePtr->condAttr));
+  r = pthread_condattr_setpshared(&(mvar->statePtr->condAttr), PTHREAD_PROCESS_SHARED);
+  r = pthread_cond_init(&(mvar->statePtr->canPutC), &(mvar->statePtr->condAttr));
+  r = pthread_cond_init(&(mvar->statePtr->canTakeC), &(mvar->statePtr->condAttr));
 
-  return r;
+  return mvar;
 }
 
 MVar *mvar_lookup(const char *name, int givenId) {

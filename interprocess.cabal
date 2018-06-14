@@ -43,9 +43,8 @@ library
                        Control.Concurrent.Process.StoredMVar
     build-depends:     base >= 4.8 && < 5
     default-language:  Haskell2010
-    ghc-options:       -Wall -debug
+    ghc-options:       -Wall
     include-dirs:      include
-    cc-options:        -lpthread -pthread -g
     c-sources:         cbits/SharedObjectName.c
                        src/Control/Concurrent/Process/StoredMVar.c
                        src/Control/Concurrent/Process/QSem.c
@@ -72,7 +71,6 @@ executable concurrent-malloc
                        , typed-process >= 0.2
                        , interprocess
     ghc-options:         -threaded -Wall
-    cc-options:          -lpthread -pthread
 
 executable wait-qsem
     if !flag(examples)
@@ -94,5 +92,4 @@ executable wait-mvar
     build-depends:       base
                        , typed-process >= 0.2
                        , interprocess
-    ghc-options:         -threaded -Wall -debug
-    cc-options:          -lpthread -pthread -g
+    ghc-options:         -threaded -Wall

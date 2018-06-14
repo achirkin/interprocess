@@ -72,7 +72,7 @@ runB i = do
     report "Started."
 
     mVar <- lookupMVar mVarRef :: IO (StoredMVar Double)
-    takePutMTimes mVar 10
+    takePutMTimes mVar 20
     report "Taking last time."
     v <- takeMVar mVar
     report $ show v ++ " Taken last time."
@@ -81,13 +81,48 @@ runB i = do
     takePutMTimes mVar m = go (1 :: Int)
       where
         go k | k > m = return ()
+             | mod k 5 == 3 = do
+                report $ show k ++ " Swapping."
+                a <- swapMVar mVar 17.5
+                report $ show k ++ " Have swapped " ++ show a
+                go (k+1)
+             | mod k 3 == 2 = do
+                report $ show k ++ " Reading."
+                a <- readMVar mVar
+                report $ show k ++ " Have read " ++ show a
+                go (k+1)
+             | mod k 7 == 6 = do
+                report $ show k ++ " Try taking."
+                ma <- tryTakeMVar mVar
+                case ma of
+                  Just a -> do
+                    report $ show k ++ " Trytaken succesfully. Try putting."
+                    putSuccess <- tryPutMVar mVar (a + 3)
+                    if putSuccess
+                      then do
+                        report $ show k ++ " I'm lucky! Try swapping now."
+                        mb <- trySwapMVar mVar (a - 7)
+                        case mb of
+                          Just b -> do
+                            report $ show k ++ " Bingo! " ++ show (a, b)
+                            go (k+1)
+                          Nothing -> do
+                            report $ show k ++ " Failed to tryswap."
+                            go (k+1)
+                      else do
+                        report $ show k ++ " Could not tryput. Wait and put now."
+                        putMVar mVar (a + 1)
+                        go (k+1)
+                  Nothing -> do
+                    report $ show k ++ " Could not trytake. Repeat."
+                    go k
              | otherwise = do
-                 report $ show k ++ " Taking."
-                 a <- takeMVar mVar
-                 report $ show k ++ " Taken. Putting."
-                 putMVar mVar (a * 2)
-                 report $ show k ++ " Have put."
-                 go (k+1)
+                report $ show k ++ " Taking."
+                a <- takeMVar mVar
+                report $ show k ++ " Taken " ++ show a ++ ". Putting."
+                putMVar mVar (a * 2)
+                report $ show k ++ " Have put."
+                go (k+1)
 
     report s =  putStrLn $ "[" ++ show i ++ "] " ++ s
 

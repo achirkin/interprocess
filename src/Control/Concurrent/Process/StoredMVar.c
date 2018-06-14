@@ -110,7 +110,9 @@ MVar *mvar_new(size_t byteSize) {
 
   // init mutex and condition variables
   r = pthread_mutexattr_init(&(mvar->statePtr->mvMAttr));
-  //if ( r == 0) r = pthread_mutexattr_settype(&(mvar->statePtr->mvMAttr), PTHREAD_MUTEX_ERRORCHECK);
+#ifndef NDEBUG
+  if ( r == 0) r = pthread_mutexattr_settype(&(mvar->statePtr->mvMAttr), PTHREAD_MUTEX_ERRORCHECK);
+#endif
   if ( r == 0) r = pthread_mutexattr_setpshared(&(mvar->statePtr->mvMAttr), PTHREAD_PROCESS_SHARED);
   if ( r == 0) r = pthread_mutex_init(&(mvar->statePtr->mvMut), &(mvar->statePtr->mvMAttr));
   if ( r == 0) r = pthread_condattr_init(&(mvar->statePtr->condAttr));

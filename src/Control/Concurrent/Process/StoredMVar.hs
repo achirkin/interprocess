@@ -43,23 +43,20 @@ newEmptyMVar = eio $ do
     n <- newEmptySOName
     unsafeWithSOName n $ c'mvar_name mvar
     StoredMVar n <$> newForeignPtr p'mvar_destroy mvar
-{-# NOINLINE newEmptyMVar #-}
 
 -- | Create a 'StoredMVar' which is initially empty.
 newMVar :: Storable a => a -> IO (StoredMVar a)
 newMVar value = do
     x <- newEmptyMVar
-    putMVar x value 0
+    putMVar x value
     return x
 
 
 -- | Find a `StoredMVar` created in another process ot thread by its reference.
-lookupMVar :: Storable a => SOName (StoredMVar a) -> Int -> IO (StoredMVar a)
-lookupMVar n i = eio $ do
-    mvar <- eio . unsafeWithSOName n $ checkNullPointer "lookupMVar"
-     . flip c'mvar_lookup (fromIntegral i)
+lookupMVar :: Storable a => SOName (StoredMVar a) ->  IO (StoredMVar a)
+lookupMVar n = do
+    mvar <- unsafeWithSOName n $ checkNullPointer "lookupMVar". c'mvar_lookup
     StoredMVar n <$> newForeignPtr p'mvar_destroy mvar
-{-# NOINLINE lookupMVar #-}
 
 -- | Get a global reference to the `StoredMVar`.
 --   Send this reference to another process to lookup this `StoredMVar` and
@@ -79,15 +76,14 @@ mVarName (StoredMVar r _) = r
 --   * The library makes no guarantees about the order in which processes
 --     are woken up. This is all up to implementation-dependent OS scheduling.
 --
-takeMVar :: Storable a => StoredMVar a -> Int -> IO a
-takeMVar (StoredMVar _ fp) i = mask_ $ eio $ withForeignPtr fp $ \p -> alloca $ \lp -> do
-    r <- c'mvar_take p lp $ fromIntegral i
+takeMVar :: Storable a => StoredMVar a -> IO a
+takeMVar (StoredMVar _ fp) = withForeignPtr fp $ \p -> alloca $ \lp -> do
+    r <- c'mvar_take p lp
     if r == 0
     then peek lp
     else do
       putStrLn $ "takeMVar failed with code " ++ show r
       throwErrno $ "takeMVar failed with code " ++ show r
-{-# NOINLINE takeMVar #-}
 
 
 -- -- | Atomically read the contents of an 'StoredMVar'.  If the 'StoredMVar' is
@@ -115,10 +111,10 @@ takeMVar (StoredMVar _ fp) i = mask_ $ eio $ withForeignPtr fp $ \p -> alloca $ 
 --   * The library makes no guarantees about the order in which processes
 --     are woken up. This is all up to implementation-dependent OS scheduling.
 --
-putMVar :: Storable a => StoredMVar a -> a -> Int -> IO ()
-putMVar (StoredMVar _ fp) x i = mask_ $ eio $ withForeignPtr fp $ \p -> alloca $ \lp -> do
+putMVar :: Storable a => StoredMVar a -> a -> IO ()
+putMVar (StoredMVar _ fp) x = mask_ $ eio $ withForeignPtr fp $ \p -> alloca $ \lp -> do
     poke lp x
-    r <- c'mvar_put p lp $ fromIntegral i
+    r <- c'mvar_put p lp
     if r == 0
     then return ()
     else do
@@ -172,7 +168,7 @@ foreign import ccall unsafe "mvar_new"
   c'mvar_new :: CSize -> IO (Ptr StoredMVarT)
 
 foreign import ccall unsafe "mvar_lookup"
-  c'mvar_lookup :: CString -> CInt -> IO (Ptr StoredMVarT)
+  c'mvar_lookup :: CString -> IO (Ptr StoredMVarT)
 
 foreign import ccall unsafe "&mvar_destroy"
   p'mvar_destroy :: FunPtr (Ptr StoredMVarT -> IO ())
@@ -182,11 +178,11 @@ foreign import ccall unsafe "mvar_name"
 
 
 foreign import ccall interruptible "mvar_take"
-  c'mvar_take :: Ptr StoredMVarT -> Ptr a -> CInt -> IO CInt
+  c'mvar_take :: Ptr StoredMVarT -> Ptr a -> IO CInt
 -- foreign import ccall unsafe "mvar_trytake"
 --   c'mvar_trytake :: Ptr StoredMVarT -> Ptr a -> IO CInt
 foreign import ccall interruptible "mvar_put"
-  c'mvar_put :: Ptr StoredMVarT -> Ptr a -> CInt -> IO CInt
+  c'mvar_put :: Ptr StoredMVarT -> Ptr a -> IO CInt
 -- foreign import ccall unsafe "mvar_tryput"
 --   c'mvar_tryput :: Ptr StoredMVarT -> Ptr a -> IO CInt
 -- foreign import ccall unsafe "mvar_read"

@@ -59,7 +59,7 @@ runA n = do
       forM_ (zip [1 :: Int ..] procs) $ \(i,_) -> do
         -- threadDelay 10000 >>
         putStrLn $ "[A] Putting " ++ show i
-        putMVar mVar (i, 1 / fromIntegral i) i
+        putMVar mVar (i, 1 / fromIntegral i)
         putStrLn $ "[A] Have put " ++ show i
 
       -- finish with full mvar, so that all readers can finish too.
@@ -88,7 +88,7 @@ runB = do
   putStrLn $ "[B] (" ++ show i ++ ") Started."
   rr <- Vanilla.newEmptyMVar
   void . forkOS . flip finally (Vanilla.putMVar rr ()) $ do
-    emVar <- try (lookupMVar mVarRef i :: IO (StoredMVar (Int, Double)))
+    emVar <- try (lookupMVar mVarRef :: IO (StoredMVar (Int, Double)))
     mr <- case emVar of
       Left e -> return $ Left e
       Right mVar -> try $ do
@@ -96,14 +96,14 @@ runB = do
             f 0 = return ()
             f k = do
               putStrLn $ "[" ++ show i ++ "] " ++ show (1000 + k) ++ " Taking."
-              (a,b) <- takeMVar mVar (1000 + k)
+              (a,b) <- takeMVar mVar
               seq a . seq b . putStrLn $ "[" ++ show i ++ "] " ++ show (1000 + k) ++ " Taken. Putting."
-              putMVar mVar (a + 2, b * 2) (1000 + k)
+              putMVar mVar (a + 2, b * 2)
               seq a . seq b . putStrLn $ "[" ++ show i ++ "] " ++ show (1000 + k) ++ " Have put."
               f (k - 1)
         f 10
         putStrLn $ "[" ++ show i ++ "] Taking last time."
-        v <- takeMVar mVar 777
+        v <- takeMVar mVar
         putStrLn $ "[" ++ show i ++ "] (" ++ show v ++ ") Taken last time."
     print (mr :: Either SomeException ())
         -- print $ mVarName mVar

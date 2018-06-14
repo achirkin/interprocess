@@ -163,7 +163,7 @@ putMVar :: Storable a => StoredMVar a -> a -> IO ()
 putMVar (StoredMVar _ fp) x = mask_ $ withForeignPtr fp $ \p -> alloca $ \lp -> do
     poke lp x
     r <- c'mvar_put p lp
-    when (r == 0) $ throwErrno $ "putMVar failed with code " ++ show r
+    when (r /= 0) $ throwErrno $ "putMVar failed with code " ++ show r
 {-# NOINLINE putMVar #-}
 
 -- | A non-blocking version of 'takeMVar'.  The 'tryTakeMVar' function

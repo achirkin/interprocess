@@ -1,5 +1,4 @@
 #include "SharedObjectName.h"
-#include "HsFFI.h"
 #include <stdlib.h>
 
 typedef struct MVar MVar;
@@ -8,7 +7,6 @@ MVar *mvar_new(size_t byteSize);
 MVar *mvar_lookup(const char *name);
 void  mvar_destroy(MVar *mvar);
 void  mvar_name(MVar *mvar, char * const name);
-
 
 int mvar_take   (MVar *mvar, void *localDataPtr);
 int mvar_trytake(MVar *mvar, void *localDataPtr);
@@ -30,14 +28,12 @@ int mvar_isempty(MVar *mvar);
 #include <fcntl.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/stat.h>
-#include <sys/time.h>
 #include <unistd.h>
 
+#ifndef NDEBUG
+// a bit of printf to track important events
 #include <stdio.h>
-#include <time.h>
-#include <errno.h>
-#include <signal.h>
+#endif
 
 typedef struct MVarState {
   pthread_mutex_t     mvMut;
@@ -132,21 +128,21 @@ MVar *mvar_new(size_t byteSize) {
 }
 
 MVar *mvar_lookup(const char *name) {
-  int memFd = shm_open(name, O_RDWR, S_IRWXU);
+  int memFd = shm_open(name, O_RDWR, S_IRUSR | S_IWUSR);
   if (memFd < 0) return NULL;
 
   // first, map only sizeof(MVarState) bytes
   // then, read the actual size and remap memory
   void *mvs0 = mmap( NULL, sizeof(MVarState)
-                   , PROT_READ | PROT_WRITE | PROT_EXEC
-                   , MAP_SHARED, memFd, 0);
+                   , PROT_READ, MAP_SHARED, memFd, 0);
   if (mvs0 == MAP_FAILED) return NULL;
   size_t dataShift = mvar_state_size64(),
          storeSize = dataShift + ((MVarState*)mvs0)->dataSize;
-  MVarState *mvs = (MVarState*) mremap(mvs0, 0, storeSize, MREMAP_MAYMOVE);
   munmap(mvs0, sizeof(MVarState)); // don't really care if it is failed
+  MVarState *mvs = (MVarState*) mmap( NULL, storeSize
+                                    , PROT_READ | PROT_WRITE
+                                    , MAP_SHARED, memFd, 0);
   if (mvs == MAP_FAILED) return NULL;
-
   // setup MVar struct
   MVar *mvar = malloc(sizeof(MVar));
   if (mvar == NULL) {

@@ -21,6 +21,23 @@ int mvar_isempty(MVar *mvar);
 
 
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32) || defined(mingw32_HOST_OS)
+#include <windows.h>
+
+typedef struct MVar {
+  /* Semaphore: those, who want to take
+   */
+  HANDLE takers;
+  /* Semaphore: those, who want to put
+   */
+  HANDLE putters;
+  /* Actual data is stored next to the MVarState
+   */
+  void  *dataPtr;
+  /* Base name of the shared memory region, used to share mvar across processes.
+     Secondary objects are contstructed by appending a single char to the name.
+   */
+  SharedObjectName  mvarName;
+} MVar;
 
 
 #else

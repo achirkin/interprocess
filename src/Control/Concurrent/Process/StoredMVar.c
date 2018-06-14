@@ -1,12 +1,12 @@
 #include "SharedObjectName.h"
 #include <stdlib.h>
+#include <string.h>
 
 typedef struct MVar MVar;
 
 MVar *mvar_new(size_t byteSize);
 MVar *mvar_lookup(const char *name);
 void  mvar_destroy(MVar *mvar);
-void  mvar_name(MVar *mvar, char * const name);
 
 int mvar_take   (MVar *mvar, void *localDataPtr);
 int mvar_trytake(MVar *mvar, void *localDataPtr);
@@ -19,17 +19,22 @@ int mvar_tryswap(MVar *mvar, void *inPtr, void *outPtr);
 int mvar_isempty(MVar *mvar);
 
 
-
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32) || defined(mingw32_HOST_OS)
 #include <windows.h>
 
 typedef struct MVar {
-  /* Semaphore: those, who want to take
+  /* Auto-reset event: takers wait on this
    */
-  HANDLE takers;
-  /* Semaphore: those, who want to put
+  HANDLE canTakeE;
+  /* Auto-reset event: putters wait on this
    */
-  HANDLE putters;
+  HANDLE canPutE;
+  /* Manual-reset event: reades wait on this
+   */
+  HANDLE canReadE;
+  /* Mutex: protect the number of pending readers
+   */
+  HANDLE protectReaders;
   /* Actual data is stored next to the MVarState
    */
   void  *dataPtr;
@@ -40,10 +45,60 @@ typedef struct MVar {
 } MVar;
 
 
+MVar *mvar_new(size_t byteSize) {
+  return NULL;
+}
+
+MVar *mvar_lookup(const char *name) {
+  return NULL;
+}
+
+void  mvar_destroy(MVar *mvar) {
+
+}
+
+
+int mvar_take   (MVar *mvar, void *localDataPtr) {
+  return 1;
+}
+
+int mvar_trytake(MVar *mvar, void *localDataPtr) {
+  return 1;
+}
+
+int mvar_put    (MVar *mvar, void *localDataPtr) {
+  return 1;
+}
+
+int mvar_tryput (MVar *mvar, void *localDataPtr) {
+  return 1;
+}
+
+int mvar_read   (MVar *mvar, void *localDataPtr) {
+  return 1;
+}
+
+int mvar_tryread(MVar *mvar, void *localDataPtr) {
+  return 1;
+}
+
+int mvar_swap   (MVar *mvar, void *inPtr, void *outPtr) {
+  return 1;
+}
+
+int mvar_tryswap(MVar *mvar, void *inPtr, void *outPtr) {
+  return 1;
+}
+
+int mvar_isempty(MVar *mvar) {
+  return 1;
+}
+
+
+
 #else
 #include <pthread.h>
 #include <fcntl.h>
-#include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -216,10 +271,6 @@ void mvar_destroy(MVar *mvar) {
     shm_unlink(mvar->mvarName);
   }
   free(mvar);
-}
-
-void mvar_name(MVar *mvar, char * const name) {
-  strcpy(name, mvar->mvarName);
 }
 
 
@@ -399,6 +450,9 @@ int mvar_isempty(MVar *mvar) {
   return mvar->statePtr->isFull == 0;
 }
 
-
-
 #endif
+
+
+void mvar_name(MVar *mvar, char * const name) {
+  strcpy(name, mvar->mvarName);
+}

@@ -160,7 +160,7 @@ runB = do
         case mr of
           Nothing -> do
             threadDelay (1000000 * k)
-            print $ "[" ++ show i ++ "] Waiting to finish " ++ show k
+            putStrLn $ "[" ++ show i ++ "] Waiting to finish " ++ show k ++ " sec"
             go (k * 2)
           Just () -> return ()
   go 1

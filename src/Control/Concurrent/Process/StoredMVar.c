@@ -16,6 +16,9 @@ int mvar_put    (MVar *mvar, void *localDataPtr);
 int mvar_tryput (MVar *mvar, void *localDataPtr);
 int mvar_read   (MVar *mvar, void *localDataPtr);
 int mvar_tryread(MVar *mvar, void *localDataPtr);
+int mvar_swap   (MVar *mvar, void *inPtr, void *outPtr);
+int mvar_tryswap(MVar *mvar, void *inPtr, void *outPtr);
+int mvar_isempty(MVar *mvar);
 
 
 
@@ -80,7 +83,7 @@ MVar *mvar_new(size_t byteSize) {
   // allocate shared memory for MVarState and data
   size_t dataShift = mvar_state_size64();
   size_t totalSize = dataShift + byteSize;
-  int memFd = shm_open(mvar->mvarName, O_CREAT | O_RDWR, S_IRWXU);
+  int memFd = shm_open(mvar->mvarName, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
   if (memFd < 0) {
     free(mvar);
     return NULL;
@@ -92,7 +95,7 @@ MVar *mvar_new(size_t byteSize) {
     return NULL;
   }
   mvar->statePtr = (MVarState*) mmap( NULL, totalSize
-                                    , PROT_READ | PROT_WRITE | PROT_EXEC
+                                    , PROT_READ | PROT_WRITE
                                     , MAP_SHARED, memFd, 0);
   if (mvar->statePtr == MAP_FAILED) {
     shm_unlink(mvar->mvarName);
@@ -200,6 +203,10 @@ void mvar_destroy(MVar *mvar) {
   free(mvar);
 }
 
+void mvar_name(MVar *mvar, char * const name) {
+  strcpy(name, mvar->mvarName);
+}
+
 
 int mvar_take(MVar *mvar, void *localDataPtr) {
   int r = 0;
@@ -222,47 +229,36 @@ int mvar_take(MVar *mvar, void *localDataPtr) {
   return 0;
 }
 
-// int mvar_trytake(MVar *mvar, void *localDataPtr) {
-//   printf("trytake - entering\n");
-//   int r = pthread_mutex_lock(&(mvar->statePtr->mvMut));
-//   assert( r == 0 );
-//   printf("take - locked, isFull: %d, pr %d\n", mvar->statePtr->isFull, mvar->statePtr->pendingReaders);
-//   if ( !(mvar->statePtr->isFull) ) {
-//     pthread_cond_signal(&(mvar->statePtr->canPutC));
-//     r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-//     assert( r == 0 );
-//     return 1;
-//   }
-//   while ( mvar->statePtr->pendingReaders > 0 ) {
-//     if ( !(mvar->statePtr->isFull) ) {
-//       pthread_cond_signal(&(mvar->statePtr->canPutC));
-//       r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-//       assert( r == 0 );
-//       return 1;
-//     } else {
-//       pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
-//       assert( r == 0 );
-//     }
-//     printf("trytake - pthread_cond_wait iteration, isFull: %d, pr %d\n", mvar->statePtr->isFull, mvar->statePtr->pendingReaders);
-//     r = pthread_cond_wait(&(mvar->statePtr->canTakeC), &(mvar->statePtr->mvMut));
-//     assert( r == 0 );
-//   }
-//   printf("trytake - copying\n");
-//   // copy data
-//   memcpy(localDataPtr, mvar->dataPtr, mvar->statePtr->dataSize);
-//   // mark empty
-//   mvar->statePtr->isFull = 0;
-//   printf("trytake - pthread_cond_signal\n");
-//   // wakeup at least one putter
-//   r = pthread_cond_signal(&(mvar->statePtr->canPutC));
-//   assert( r == 0 );
-//   printf("trytake - unlocking\n");
-//   r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-//   assert( r == 0 );
-//   printf("trytake - finished!\n");
-//   return 0;
-// }
-
+int mvar_trytake(MVar *mvar, void *localDataPtr) {
+  int r = 0;
+  r = pthread_mutex_lock(&(mvar->statePtr->mvMut));
+  if ( r != 0 ) return r;
+  // shortcut if is empty
+  if ( !(mvar->statePtr->isFull) ) {
+    pthread_mutex_unlock(&(mvar->statePtr->mvMut));
+    return 1;
+  }
+  while ( mvar->statePtr->pendingReaders > 0 ) {
+    // make sure readers do not sleep
+    pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
+    // last reader should wake me up, wait for it.
+    r = pthread_cond_wait(&(mvar->statePtr->canTakeC), &(mvar->statePtr->mvMut));
+    if ( r != 0 ) {
+      pthread_mutex_unlock(&(mvar->statePtr->mvMut));
+      return r;
+    }
+    // repeat emptyness check (if another trytake was faster)
+    if ( !(mvar->statePtr->isFull) ) {
+      pthread_mutex_unlock(&(mvar->statePtr->mvMut));
+      return 1;
+    }
+  }
+  memcpy(localDataPtr, mvar->dataPtr, mvar->statePtr->dataSize);
+  mvar->statePtr->isFull = 0;
+  pthread_cond_signal(&(mvar->statePtr->canPutC));
+  pthread_mutex_unlock(&(mvar->statePtr->mvMut));
+  return 0;
+}
 
 int mvar_put(MVar *mvar, void *localDataPtr) {
   int r = 0;
@@ -282,77 +278,112 @@ int mvar_put(MVar *mvar, void *localDataPtr) {
   return 0;
 }
 
-
-// int mvar_tryput(MVar *mvar, void *localDataPtr) {
-//   int r = pthread_mutex_lock(&(mvar->statePtr->mvMut));
-//   assert( r == 0 );
-//   if ( mvar->statePtr->isFull ) {
-//     r = pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
-//     assert( r == 0 );
-//     r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-//     assert( r == 0 );
-//     return 1;
-//   }
-//   // copy data
-//   memcpy(mvar->dataPtr, localDataPtr, mvar->statePtr->dataSize);
-//   // mark full
-//   mvar->statePtr->isFull = 1;
-//   // wakeup all readers!
-//   r = pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
-//   assert( r == 0 );
-//   r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-//   assert( r == 0 );
-//   return 0;
-// }
-
-
-// void mvar_read(MVar *mvar, void *localDataPtr) {
-//   int r = pthread_mutex_lock(&(mvar->statePtr->mvMut));
-//   assert( r == 0 );
-//   // I am waiting!
-//   mvar->statePtr->pendingReaders++;
-//   while ( !(mvar->statePtr->isFull) ) {
-//     r = pthread_cond_signal(&(mvar->statePtr->canPutC));
-//     assert( r == 0 );
-//     r = pthread_cond_wait(&(mvar->statePtr->canTakeC), &(mvar->statePtr->mvMut));
-//     assert( r == 0 );
-//   }
-//   // copy data
-//   memcpy(localDataPtr, mvar->dataPtr, mvar->statePtr->dataSize);
-//   // the last reader should wakeup at least one taker
-//   // Decrement the waiters counter and maybe wake up another taker
-//   if ( (--(mvar->statePtr->pendingReaders)) == 0 ) {
-//     r = pthread_cond_signal(&(mvar->statePtr->canTakeC));
-//     assert( r == 0 );
-//   }
-//   r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-//   assert( r == 0 );
-// }
-//
-// int mvar_tryread(MVar *mvar, void *localDataPtr) {
-//   int r = pthread_mutex_lock(&(mvar->statePtr->mvMut));
-//   assert( r == 0 );
-//   if ( !(mvar->statePtr->isFull) ) {
-//     r = pthread_cond_signal(&(mvar->statePtr->canPutC));
-//     assert( r == 0 );
-//     r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-//     assert( r == 0 );
-//     return 1;
-//   } else {
-//     memcpy(localDataPtr, mvar->dataPtr, mvar->statePtr->dataSize);
-//     if ( (mvar->statePtr->pendingReaders) == 0 ) {
-//       r = pthread_cond_signal(&(mvar->statePtr->canTakeC));
-//       assert( r == 0 );
-//     }
-//     r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-//     assert( r == 0 );
-//     return 0;
-//   }
-// }
-
-
-void mvar_name(MVar *mvar, char * const name) {
-  strcpy(name, mvar->mvarName);
+int mvar_tryput(MVar *mvar, void *localDataPtr) {
+  int r = 0;
+  r = pthread_mutex_lock(&(mvar->statePtr->mvMut));
+  if ( r != 0 ) return r;
+  // shortcut if is full
+  if ( mvar->statePtr->isFull ) {
+    pthread_mutex_unlock(&(mvar->statePtr->mvMut));
+    return 1;
+  }
+  memcpy(mvar->dataPtr, localDataPtr, mvar->statePtr->dataSize);
+  mvar->statePtr->isFull = 1;
+  pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
+  pthread_mutex_unlock(&(mvar->statePtr->mvMut));
+  return 0;
 }
+
+int mvar_read(MVar *mvar, void *localDataPtr) {
+  int r = 0;
+  r = pthread_mutex_lock(&(mvar->statePtr->mvMut));
+  if ( r != 0 ) return r;
+  mvar->statePtr->pendingReaders++;
+  while ( !(mvar->statePtr->isFull) ) {
+    r = pthread_cond_wait(&(mvar->statePtr->canTakeC), &(mvar->statePtr->mvMut));
+    if ( r != 0 ) {
+      pthread_mutex_unlock(&(mvar->statePtr->mvMut));
+      return r;
+    }
+  }
+  memcpy(localDataPtr, mvar->dataPtr, mvar->statePtr->dataSize);
+  if ( (--(mvar->statePtr->pendingReaders)) == 0 ) {
+    pthread_cond_signal(&(mvar->statePtr->canTakeC));
+  }
+  pthread_mutex_unlock(&(mvar->statePtr->mvMut));
+  return 0;
+}
+
+int mvar_tryread(MVar *mvar, void *localDataPtr) {
+  int r = 0;
+  r = pthread_mutex_lock(&(mvar->statePtr->mvMut));
+  if ( r != 0 ) return r;
+  // shortcut if is empty
+  if ( !(mvar->statePtr->isFull) ) {
+    pthread_mutex_unlock(&(mvar->statePtr->mvMut));
+    return 1;
+  }
+  memcpy(localDataPtr, mvar->dataPtr, mvar->statePtr->dataSize);
+  pthread_mutex_unlock(&(mvar->statePtr->mvMut));
+  return 0;
+}
+
+int mvar_swap(MVar *mvar, void *inPtr, void *outPtr) {
+  int r = 0;
+  r = pthread_mutex_lock(&(mvar->statePtr->mvMut));
+  if ( r != 0 ) return r;
+  while ( !(mvar->statePtr->isFull) || mvar->statePtr->pendingReaders > 0 ) {
+    if ( mvar->statePtr->pendingReaders > 0 ) {
+      pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
+    }
+    r = pthread_cond_wait(&(mvar->statePtr->canTakeC), &(mvar->statePtr->mvMut));
+    if ( r != 0 ) {
+      pthread_mutex_unlock(&(mvar->statePtr->mvMut));
+      return r;
+    }
+  }
+  memcpy(outPtr, mvar->dataPtr, mvar->statePtr->dataSize);
+  memcpy(mvar->dataPtr, inPtr , mvar->statePtr->dataSize);
+  pthread_cond_signal(&(mvar->statePtr->canTakeC));
+  pthread_mutex_unlock(&(mvar->statePtr->mvMut));
+  return 0;
+}
+
+int mvar_tryswap(MVar *mvar, void *inPtr, void *outPtr) {
+  int r = 0;
+  r = pthread_mutex_lock(&(mvar->statePtr->mvMut));
+  if ( r != 0 ) return r;
+  // shortcut if is empty
+  if ( !(mvar->statePtr->isFull) ) {
+    pthread_mutex_unlock(&(mvar->statePtr->mvMut));
+    return 1;
+  }
+  while ( mvar->statePtr->pendingReaders > 0 ) {
+    // make sure readers do not sleep
+    pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
+    // last reader should wake me up, wait for it.
+    r = pthread_cond_wait(&(mvar->statePtr->canTakeC), &(mvar->statePtr->mvMut));
+    if ( r != 0 ) {
+      pthread_mutex_unlock(&(mvar->statePtr->mvMut));
+      return r;
+    }
+    // repeat emptyness check (if another trytake was faster)
+    if ( !(mvar->statePtr->isFull) ) {
+      pthread_mutex_unlock(&(mvar->statePtr->mvMut));
+      return 1;
+    }
+  }
+  memcpy(outPtr, mvar->dataPtr, mvar->statePtr->dataSize);
+  memcpy(mvar->dataPtr, inPtr , mvar->statePtr->dataSize);
+  pthread_cond_signal(&(mvar->statePtr->canPutC));
+  pthread_mutex_unlock(&(mvar->statePtr->mvMut));
+  return 0;
+}
+
+int mvar_isempty(MVar *mvar) {
+  return mvar->statePtr->isFull == 0;
+}
+
+
 
 #endif

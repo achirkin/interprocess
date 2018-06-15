@@ -35,6 +35,9 @@ typedef struct MVar {
   /* Mutex: protect the number of pending readers
    */
   HANDLE protectReaders;
+  /* FileMapping: keep the data by this handle
+   */
+  HANDLE dataStore;
   /* Actual data is stored next to the MVarState
    */
   void  *dataPtr;

@@ -1,6 +1,10 @@
 #include "SharedObjectName.h"
 #include <stdlib.h>
 #include <string.h>
+#ifndef NDEBUG
+// a bit of printf to track important events
+#include <stdio.h>
+#endif
 
 typedef struct MVar MVar;
 
@@ -21,6 +25,14 @@ int mvar_isempty(MVar *mvar);
 
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32) || defined(mingw32_HOST_OS)
 #include <windows.h>
+#include <assert.h>
+
+typedef struct MVarState {
+  size_t dataSize;
+  int    pendingReaders;
+  int    isFull;
+} MVarState;
+
 
 typedef struct MVar {
   /* Auto-reset event: takers wait on this
@@ -37,10 +49,13 @@ typedef struct MVar {
   HANDLE protectReaders;
   /* FileMapping: keep the data by this handle
    */
-  HANDLE dataStore;
+  HANDLE dataStoreH;
+  /* Address of the data store
+   */
+  MVarState *storePtr;
   /* Actual data is stored next to the MVarState
    */
-  void  *dataPtr;
+  void      *dataPtr;
   /* Base name of the shared memory region, used to share mvar across processes.
      Secondary objects are contstructed by appending a single char to the name.
    */
@@ -49,52 +64,319 @@ typedef struct MVar {
 
 
 MVar *mvar_new(size_t byteSize) {
-  return NULL;
+  // allocate MVar
+  MVar *mvar = malloc(sizeof(MVar));
+  if (mvar == NULL) {
+    return NULL;
+  }
+  genSharedObjectName(mvar->mvarName);
+
+  mvar->dataStoreH = CreateFileMappingA
+    ( INVALID_HANDLE_VALUE       // use paging file
+    , NULL                       // default security
+    , PAGE_READWRITE             // read/write access
+    , (DWORD)(byteSize >> 32)        // maximum object size (high-order DWORD)
+    , (DWORD)((byteSize + 64) & 0xFFFFFFFF) // maximum object size (low-order DWORD)
+    , mvar->mvarName);             // name of mapping object
+
+  if (mvar->dataStoreH == NULL) {
+#ifdef NDEBUG
+    printf("Could not create file mapping object (%d).\n", GetLastError());
+#endif
+    free(mvar);
+    return NULL;
+  }
+  mvar->storePtr = (MVarState*)MapViewOfFile
+    ( mvar->dataStoreH    // handle to map object
+    , FILE_MAP_ALL_ACCESS // read/write permission
+    , 0
+    , 0
+    , byteSize + 64);
+
+  if (mvar->storePtr == NULL) {
+#ifdef NDEBUG
+	  printf("Could not map view of file (%d).\n", GetLastError());
+#endif
+    CloseHandle(mvar->dataStoreH);
+    free(mvar);
+    return NULL;
+  }
+  mvar->dataPtr = ((void*)(mvar->storePtr)) + 64;
+
+  // now, create all synchronization objects
+  // TODO: NULL value checking?
+  SharedObjectName objName = {0};
+  strcpy (objName, mvar->mvarName);
+  strcat (objName, "T");
+  mvar->canTakeE = CreateEventA( NULL, FALSE, FALSE, objName);
+  strcpy (objName, mvar->mvarName);
+  strcat (objName, "P");
+  mvar->canPutE = CreateEventA( NULL, FALSE, TRUE, objName);
+  strcpy (objName, mvar->mvarName);
+  strcat (objName, "R");
+  mvar->canReadE = CreateEventA( NULL, TRUE, FALSE, objName);
+  strcpy (objName, mvar->mvarName);
+  strcat (objName, "M");
+  mvar->protectReaders = CreateMutexA( NULL, FALSE, objName);
+
+  // zero readers pending
+  *(mvar->storePtr) = (struct MVarState)
+    { .dataSize = byteSize
+    , .pendingReaders = 0
+    , .isFull = 0
+    };
+
+  return mvar;
 }
 
 MVar *mvar_lookup(const char *name) {
-  return NULL;
+  // allocate MVar
+  MVar *mvar = malloc(sizeof(MVar));
+  if (mvar == NULL) {
+    return NULL;
+  }
+  strcpy(mvar->mvarName, name);
+
+  mvar->dataStoreH = OpenFileMappingA( FILE_MAP_ALL_ACCESS, FALSE, mvar->mvarName);
+
+  if (mvar->dataStoreH == NULL) {
+#ifdef NDEBUG
+    printf("Could not open file mapping object (%d).\n", GetLastError());
+#endif
+    free(mvar);
+    return NULL;
+  }
+  mvar->storePtr = (MVarState*)MapViewOfFile
+    ( mvar->dataStoreH    // handle to map object
+    , FILE_MAP_READ // read/write permission
+    , 0
+    , 0
+    , 64);
+
+  if (mvar->storePtr == NULL) {
+#ifdef NDEBUG
+	  printf("Could not map view of file (%d).\n", GetLastError());
+#endif
+    CloseHandle(mvar->dataStoreH);
+    free(mvar);
+    return NULL;
+  }
+  size_t storeSize = mvar->storePtr->dataSize + 64;
+  UnmapViewOfFile(mvar->storePtr);
+  mvar->storePtr = (MVarState*)MapViewOfFile
+    ( mvar->dataStoreH    // handle to map object
+    , FILE_MAP_ALL_ACCESS // read/write permission
+    , 0
+    , 0
+    , storeSize);
+
+  if (mvar->storePtr == NULL) {
+#ifdef NDEBUG
+	  printf("Could not map view of file (%d).\n", GetLastError());
+#endif
+    CloseHandle(mvar->dataStoreH);
+    free(mvar);
+    return NULL;
+  }
+  mvar->dataPtr = (void*)(mvar->storePtr) + 64;
+
+  // now, create all synchronization objects
+  // TODO: NULL value checking?
+  SharedObjectName objName = {0};
+  strcpy (objName, mvar->mvarName);
+  strcat (objName, "T");
+  mvar->canTakeE = OpenEventA( EVENT_MODIFY_STATE | SYNCHRONIZE, FALSE, objName);
+  strcpy (objName, mvar->mvarName);
+  strcat (objName, "P");
+  mvar->canPutE  = OpenEventA( EVENT_MODIFY_STATE | SYNCHRONIZE, FALSE, objName);
+  strcpy (objName, mvar->mvarName);
+  strcat (objName, "R");
+  mvar->canReadE = OpenEventA( EVENT_MODIFY_STATE | SYNCHRONIZE, FALSE, objName);
+  strcpy (objName, mvar->mvarName);
+  strcat (objName, "M");
+  mvar->protectReaders = OpenMutexA( SYNCHRONIZE, FALSE, objName);
+
+  return mvar;
 }
 
 void  mvar_destroy(MVar *mvar) {
-
+  UnmapViewOfFile(mvar->storePtr);
+  CloseHandle(mvar->canTakeE);
+  CloseHandle(mvar->canPutE);
+  CloseHandle(mvar->canReadE);
+  CloseHandle(mvar->protectReaders);
+  CloseHandle(mvar->dataStoreH);
+  free(mvar);
 }
 
-
 int mvar_take   (MVar *mvar, void *localDataPtr) {
-  return 1;
+  DWORD r = WaitForSingleObject(mvar->canTakeE, INFINITE);
+  if (r != WAIT_OBJECT_0) {
+#ifdef NDEBUG
+    printf("WaitForSingleObject canTakeE error: return %d; error code %d.\n", r, GetLastError());
+#endif
+    return 1;
+  } else {
+    r = WaitForSingleObject(mvar->protectReaders, INFINITE);
+    assert( r == WAIT_OBJECT_0 );
+    mvar->storePtr->isFull = 0;
+    ResetEvent(mvar->canReadE);
+    memcpy(localDataPtr, mvar->dataPtr, mvar->storePtr->dataSize);
+    SetEvent(mvar->canPutE);
+    r = ReleaseMutex(mvar->protectReaders);
+    assert( r != 0 );
+    return 0;
+  }
 }
 
 int mvar_trytake(MVar *mvar, void *localDataPtr) {
-  return 1;
+  DWORD r = WaitForSingleObject(mvar->canTakeE, 0);
+  switch (r) {
+    case WAIT_OBJECT_0:
+      r = WaitForSingleObject(mvar->protectReaders, INFINITE);
+      assert( r == WAIT_OBJECT_0 );
+      mvar->storePtr->isFull = 0;
+      ResetEvent(mvar->canReadE);
+      memcpy(localDataPtr, mvar->dataPtr, mvar->storePtr->dataSize);
+      SetEvent(mvar->canPutE);
+      r = ReleaseMutex(mvar->protectReaders);
+      assert( r != 0 );
+      return 0;
+    case WAIT_TIMEOUT:
+      return 1;
+    default:
+#ifdef NDEBUG
+      printf("WaitForSingleObject canTakeE error: return %d; error code %d.\n", r, GetLastError());
+#endif
+      return 1;
+  }
 }
 
 int mvar_put    (MVar *mvar, void *localDataPtr) {
-  return 1;
+  DWORD r = WaitForSingleObject(mvar->canPutE, INFINITE);
+  if (r != WAIT_OBJECT_0) {
+#ifdef NDEBUG
+    printf("WaitForSingleObject canPutE error: return %d; error code %d.\n", r, GetLastError());
+#endif
+    return 1;
+  } else {
+    memcpy(mvar->dataPtr, localDataPtr, mvar->storePtr->dataSize);
+    // first check readers, and only then, maybe allow takers
+    r = WaitForSingleObject(mvar->protectReaders, INFINITE);
+    assert( r == WAIT_OBJECT_0 );
+    SetEvent(mvar->canReadE);
+    if (mvar->storePtr->pendingReaders == 0) {
+      SetEvent(mvar->canTakeE);
+    }
+    mvar->storePtr->isFull = 1;
+    r = ReleaseMutex(mvar->protectReaders);
+    assert( r != 0 );
+    return 0;
+  }
 }
 
 int mvar_tryput (MVar *mvar, void *localDataPtr) {
-  return 1;
+  DWORD r = WaitForSingleObject(mvar->canPutE, 0);
+  switch (r) {
+    case WAIT_OBJECT_0:
+      memcpy(mvar->dataPtr, localDataPtr, mvar->storePtr->dataSize);
+      // first check readers, and only then, maybe allow takers
+      r = WaitForSingleObject(mvar->protectReaders, INFINITE);
+      assert( r == WAIT_OBJECT_0 );
+      SetEvent(mvar->canReadE);
+      if (mvar->storePtr->pendingReaders == 0) {
+        SetEvent(mvar->canTakeE);
+      }
+      mvar->storePtr->isFull = 1;
+      r = ReleaseMutex(mvar->protectReaders);
+      assert( r != 0 );
+      return 0;
+    case WAIT_TIMEOUT:
+      return 1;
+    default:
+#ifdef NDEBUG
+      printf("WaitForSingleObject canTakeE error: return %d; error code %d.\n", r, GetLastError());
+#endif
+      return 1;
+  }
 }
 
 int mvar_read   (MVar *mvar, void *localDataPtr) {
-  return 1;
+  DWORD r = WaitForSingleObject(mvar->protectReaders, INFINITE);
+  assert( r == WAIT_OBJECT_0 );
+  mvar->storePtr->pendingReaders++;
+  r = ReleaseMutex(mvar->protectReaders);
+  assert( r != 0 );
+  r = WaitForSingleObject(mvar->canReadE, INFINITE);
+  if (r != WAIT_OBJECT_0) {
+#ifdef NDEBUG
+    printf("WaitForSingleObject canReadE error: return %d; error code %d.\n", r, GetLastError());
+#endif
+    return 1;
+  } else {
+    memcpy(localDataPtr, mvar->dataPtr, mvar->storePtr->dataSize);
+    r = WaitForSingleObject(mvar->protectReaders, INFINITE);
+    assert( r == WAIT_OBJECT_0 );
+    if ( (--(mvar->storePtr->pendingReaders)) == 0 && (mvar->storePtr->isFull == 1)) {
+      SetEvent(mvar->canTakeE);
+    }
+    r = ReleaseMutex(mvar->protectReaders);
+    assert( r != 0 );
+    return 0;
+  }
 }
 
 int mvar_tryread(MVar *mvar, void *localDataPtr) {
-  return 1;
+  DWORD r = WaitForSingleObject(mvar->canReadE, 0);
+  switch (r) {
+    case WAIT_OBJECT_0:
+      memcpy(localDataPtr, mvar->dataPtr, mvar->storePtr->dataSize);
+      return 0;
+    case WAIT_TIMEOUT:
+      return 1;
+    default:
+#ifdef NDEBUG
+      printf("WaitForSingleObject canTakeE error: return %d; error code %d.\n", r, GetLastError());
+#endif
+      return 1;
+  }
 }
 
 int mvar_swap   (MVar *mvar, void *inPtr, void *outPtr) {
-  return 1;
+  DWORD r = WaitForSingleObject(mvar->canTakeE, INFINITE);
+  if (r != WAIT_OBJECT_0) {
+#ifdef NDEBUG
+    printf("WaitForSingleObject canTakeE error: return %d; error code %d.\n", r, GetLastError());
+#endif
+    return 1;
+  } else {
+    memcpy(outPtr, mvar->dataPtr, mvar->storePtr->dataSize);
+    memcpy(mvar->dataPtr, inPtr , mvar->storePtr->dataSize);
+    SetEvent(mvar->canTakeE);
+    return 0;
+  }
 }
 
 int mvar_tryswap(MVar *mvar, void *inPtr, void *outPtr) {
-  return 1;
+  DWORD r = WaitForSingleObject(mvar->canTakeE, 0);
+  switch (r) {
+    case WAIT_OBJECT_0:
+      memcpy(outPtr, mvar->dataPtr, mvar->storePtr->dataSize);
+      memcpy(mvar->dataPtr, inPtr , mvar->storePtr->dataSize);
+      SetEvent(mvar->canTakeE);
+      return 0;
+    case WAIT_TIMEOUT:
+      return 1;
+    default:
+#ifdef NDEBUG
+      printf("WaitForSingleObject canTakeE error: return %d; error code %d.\n", r, GetLastError());
+#endif
+      return 1;
+  }
 }
 
 int mvar_isempty(MVar *mvar) {
-  return 1;
+  return mvar->storePtr->isFull == 0;
 }
 
 
@@ -105,10 +387,6 @@ int mvar_isempty(MVar *mvar) {
 #include <sys/mman.h>
 #include <unistd.h>
 
-#ifndef NDEBUG
-// a bit of printf to track important events
-#include <stdio.h>
-#endif
 
 typedef struct MVarState {
   pthread_mutex_t     mvMut;

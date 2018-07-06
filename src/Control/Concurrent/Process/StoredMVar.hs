@@ -144,7 +144,7 @@ swapMVar (StoredMVar _ fp) x
     r <- c'mvar_swap p inp outp
     if r == 0
     then peek outp
-    else throwErrno $ "takeMVar failed with code " ++ show r
+    else throwErrno $ "swapMVar failed with code " ++ show r
 {-# INLINE swapMVar #-}
 
 

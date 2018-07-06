@@ -57,7 +57,7 @@ runA n = do
         let x = recip i
         report $ "Putting " ++ show x
         putMVar mVar x
-        report $ "Have put " ++ show x
+        report $ "Have put " ++ show x ++ " (" ++ show i ++ "-th)"
 
       report "Have put. Waiting"
 

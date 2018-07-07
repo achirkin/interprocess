@@ -12,7 +12,7 @@ Features and TODO:
         that can be accessed by multiple processes.
   * [x] Semaphores
   * [ ] Mutexes (not sure if need this)
-  * [ ] Mutable variables via `Storable` instance plus garbage collection.
+  * [x] Mutable variables via `Storable` instance plus garbage collection.
   * [ ] Proper error messages
   * [ ] Debug, verbose mode
 

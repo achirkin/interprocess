@@ -1,5 +1,3 @@
-{-# LANGUAGE FlexibleInstances #-}
-{-# OPTIONS_GHC -fno-warn-orphans #-}
 module Main where
 
 import           Control.Concurrent.Process.StoredMVar

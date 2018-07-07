@@ -26,24 +26,26 @@ int mvar_isempty(MVar *mvar);
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32) || defined(mingw32_HOST_OS)
 #include <windows.h>
 #include <assert.h>
+#ifndef WAIT_OBJECT_1
+#define WAIT_OBJECT_1       ((WAIT_OBJECT_0 ) + 1 )
+#endif
 
 typedef struct MVarState {
   size_t dataSize;
   int    pendingReaders;
-  int    isFull;
 } MVarState;
 
 
 typedef struct MVar {
+  /* Manual-reset event: reades wait on this
+   */
+  HANDLE canReadE;
   /* Auto-reset event: takers wait on this
    */
   HANDLE canTakeE;
   /* Auto-reset event: putters wait on this
    */
   HANDLE canPutE;
-  /* Manual-reset event: reades wait on this
-   */
-  HANDLE canReadE;
   /* Mutex: protect the number of pending readers
    */
   HANDLE protectReaders;
@@ -123,7 +125,6 @@ MVar *mvar_new(size_t byteSize) {
   *(mvar->storePtr) = (struct MVarState)
     { .dataSize = byteSize
     , .pendingReaders = 0
-    , .isFull = 0
     };
 
   return mvar;
@@ -217,14 +218,8 @@ int mvar_take   (MVar *mvar, void *localDataPtr) {
 #endif
     return 1;
   } else {
-    r = WaitForSingleObject(mvar->protectReaders, INFINITE);
-    assert( r == WAIT_OBJECT_0 );
-    mvar->storePtr->isFull = 0;
-    ResetEvent(mvar->canReadE);
     memcpy(localDataPtr, mvar->dataPtr, mvar->storePtr->dataSize);
     SetEvent(mvar->canPutE);
-    r = ReleaseMutex(mvar->protectReaders);
-    assert( r != 0 );
     return 0;
   }
 }
@@ -233,14 +228,8 @@ int mvar_trytake(MVar *mvar, void *localDataPtr) {
   DWORD r = WaitForSingleObject(mvar->canTakeE, 0);
   switch (r) {
     case WAIT_OBJECT_0:
-      r = WaitForSingleObject(mvar->protectReaders, INFINITE);
-      assert( r == WAIT_OBJECT_0 );
-      mvar->storePtr->isFull = 0;
-      ResetEvent(mvar->canReadE);
       memcpy(localDataPtr, mvar->dataPtr, mvar->storePtr->dataSize);
       SetEvent(mvar->canPutE);
-      r = ReleaseMutex(mvar->protectReaders);
-      assert( r != 0 );
       return 0;
     case WAIT_TIMEOUT:
       return 1;
@@ -261,16 +250,16 @@ int mvar_put    (MVar *mvar, void *localDataPtr) {
     return 1;
   } else {
     memcpy(mvar->dataPtr, localDataPtr, mvar->storePtr->dataSize);
+    PulseEvent(mvar->canReadE);
     // first check readers, and only then, maybe allow takers
     r = WaitForSingleObject(mvar->protectReaders, INFINITE);
     assert( r == WAIT_OBJECT_0 );
-    SetEvent(mvar->canReadE);
-    if (mvar->storePtr->pendingReaders == 0) {
-      SetEvent(mvar->canTakeE);
-    }
-    mvar->storePtr->isFull = 1;
+    int remRdrs = mvar->storePtr->pendingReaders;
     r = ReleaseMutex(mvar->protectReaders);
     assert( r != 0 );
+    if (remRdrs == 0) {
+      SetEvent(mvar->canTakeE);
+    }
     return 0;
   }
 }
@@ -280,16 +269,16 @@ int mvar_tryput (MVar *mvar, void *localDataPtr) {
   switch (r) {
     case WAIT_OBJECT_0:
       memcpy(mvar->dataPtr, localDataPtr, mvar->storePtr->dataSize);
+      PulseEvent(mvar->canReadE);
       // first check readers, and only then, maybe allow takers
       r = WaitForSingleObject(mvar->protectReaders, INFINITE);
       assert( r == WAIT_OBJECT_0 );
-      SetEvent(mvar->canReadE);
-      if (mvar->storePtr->pendingReaders == 0) {
-        SetEvent(mvar->canTakeE);
-      }
-      mvar->storePtr->isFull = 1;
+      int remRdrs = mvar->storePtr->pendingReaders;
       r = ReleaseMutex(mvar->protectReaders);
       assert( r != 0 );
+      if (remRdrs == 0) {
+        SetEvent(mvar->canTakeE);
+      }
       return 0;
     case WAIT_TIMEOUT:
       return 1;
@@ -307,30 +296,34 @@ int mvar_read   (MVar *mvar, void *localDataPtr) {
   mvar->storePtr->pendingReaders++;
   r = ReleaseMutex(mvar->protectReaders);
   assert( r != 0 );
-  r = WaitForSingleObject(mvar->canReadE, INFINITE);
-  if (r != WAIT_OBJECT_0) {
+  DWORD signaled = WaitForMultipleObjects(2, (HANDLE*)mvar, FALSE, INFINITE);
+  switch (signaled) {
+    case WAIT_OBJECT_0:
+    case WAIT_OBJECT_1:
+      memcpy(localDataPtr, mvar->dataPtr, mvar->storePtr->dataSize);
+      r = WaitForSingleObject(mvar->protectReaders, INFINITE);
+      assert( r == WAIT_OBJECT_0 );
+      int remRdrs = --(mvar->storePtr->pendingReaders);
+      r = ReleaseMutex(mvar->protectReaders);
+      assert( r != 0 );
+      if ( signaled == WAIT_OBJECT_1 || remRdrs == 0) {
+        SetEvent(mvar->canTakeE);
+      }
+      return 0;
+    default:
 #ifdef NDEBUG
-    printf("WaitForSingleObject canReadE error: return %d; error code %d.\n", r, GetLastError());
+      printf("WaitForSingleObject canReadE error: return %d; error code %d.\n", r, GetLastError());
 #endif
-    return 1;
-  } else {
-    memcpy(localDataPtr, mvar->dataPtr, mvar->storePtr->dataSize);
-    r = WaitForSingleObject(mvar->protectReaders, INFINITE);
-    assert( r == WAIT_OBJECT_0 );
-    if ( (--(mvar->storePtr->pendingReaders)) == 0 && (mvar->storePtr->isFull == 1)) {
-      SetEvent(mvar->canTakeE);
-    }
-    r = ReleaseMutex(mvar->protectReaders);
-    assert( r != 0 );
-    return 0;
+      return 1;
   }
 }
 
 int mvar_tryread(MVar *mvar, void *localDataPtr) {
-  DWORD r = WaitForSingleObject(mvar->canReadE, 0);
+  DWORD r = WaitForSingleObject(mvar->canTakeE, 0);
   switch (r) {
     case WAIT_OBJECT_0:
       memcpy(localDataPtr, mvar->dataPtr, mvar->storePtr->dataSize);
+      SetEvent(mvar->canTakeE);
       return 0;
     case WAIT_TIMEOUT:
       return 1;
@@ -376,7 +369,13 @@ int mvar_tryswap(MVar *mvar, void *inPtr, void *outPtr) {
 }
 
 int mvar_isempty(MVar *mvar) {
-  return mvar->storePtr->isFull == 0;
+  DWORD r = WaitForSingleObject(mvar->canPutE, 0);
+  if (r == WAIT_TIMEOUT) {
+    return 1;
+  } else {
+    SetEvent(mvar->canPutE);
+    return 0;
+  }
 }
 
 

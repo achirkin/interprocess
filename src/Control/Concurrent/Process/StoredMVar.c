@@ -37,9 +37,11 @@ typedef struct MVarState {
 
 
 typedef struct MVar {
-  /* Manual-reset event: reades wait on this
+  /* Semaphore: readers wait on this.
+    mvar_put releases 2n-1 units of semaphore, and every reader takes two units,
+    the last reader fails to take a second unit and sets canTakeE.
    */
-  HANDLE canReadE;
+  HANDLE canReadS;
   /* Auto-reset event: takers wait on this
    */
   HANDLE canTakeE;
@@ -116,7 +118,7 @@ MVar *mvar_new(size_t byteSize) {
   mvar->canPutE = CreateEventA( NULL, FALSE, TRUE, objName);
   strcpy (objName, mvar->mvarName);
   strcat (objName, "R");
-  mvar->canReadE = CreateEventA( NULL, TRUE, FALSE, objName);
+  mvar->canReadS = CreateSemaphoreA( NULL, 0, LONG_MAX, objName);
   strcpy (objName, mvar->mvarName);
   strcat (objName, "M");
   mvar->protectReaders = CreateMutexA( NULL, FALSE, objName);
@@ -192,7 +194,7 @@ MVar *mvar_lookup(const char *name) {
   mvar->canPutE  = OpenEventA( EVENT_MODIFY_STATE | SYNCHRONIZE, FALSE, objName);
   strcpy (objName, mvar->mvarName);
   strcat (objName, "R");
-  mvar->canReadE = OpenEventA( EVENT_MODIFY_STATE | SYNCHRONIZE, FALSE, objName);
+  mvar->canReadS = OpenSemaphoreA( SEMAPHORE_MODIFY_STATE | SYNCHRONIZE, FALSE, objName);
   strcpy (objName, mvar->mvarName);
   strcat (objName, "M");
   mvar->protectReaders = OpenMutexA( SYNCHRONIZE, FALSE, objName);
@@ -204,7 +206,7 @@ void  mvar_destroy(MVar *mvar) {
   UnmapViewOfFile(mvar->storePtr);
   CloseHandle(mvar->canTakeE);
   CloseHandle(mvar->canPutE);
-  CloseHandle(mvar->canReadE);
+  CloseHandle(mvar->canReadS);
   CloseHandle(mvar->protectReaders);
   CloseHandle(mvar->dataStoreH);
   free(mvar);
@@ -250,7 +252,6 @@ int mvar_put    (MVar *mvar, void *localDataPtr) {
     return 1;
   } else {
     memcpy(mvar->dataPtr, localDataPtr, mvar->storePtr->dataSize);
-    PulseEvent(mvar->canReadE);
     // first check readers, and only then, maybe allow takers
     r = WaitForSingleObject(mvar->protectReaders, INFINITE);
     assert( r == WAIT_OBJECT_0 );
@@ -259,6 +260,8 @@ int mvar_put    (MVar *mvar, void *localDataPtr) {
     assert( r != 0 );
     if (remRdrs == 0) {
       SetEvent(mvar->canTakeE);
+    } else {
+      ReleaseSemaphore(mvar->canReadS, 2 * (LONG) remRdrs - 1, NULL);
     }
     return 0;
   }
@@ -269,7 +272,6 @@ int mvar_tryput (MVar *mvar, void *localDataPtr) {
   switch (r) {
     case WAIT_OBJECT_0:
       memcpy(mvar->dataPtr, localDataPtr, mvar->storePtr->dataSize);
-      PulseEvent(mvar->canReadE);
       // first check readers, and only then, maybe allow takers
       r = WaitForSingleObject(mvar->protectReaders, INFINITE);
       assert( r == WAIT_OBJECT_0 );
@@ -278,6 +280,8 @@ int mvar_tryput (MVar *mvar, void *localDataPtr) {
       assert( r != 0 );
       if (remRdrs == 0) {
         SetEvent(mvar->canTakeE);
+      } else {
+        ReleaseSemaphore(mvar->canReadS, 2 * (LONG) remRdrs - 1, NULL);
       }
       return 0;
     case WAIT_TIMEOUT:
@@ -303,16 +307,20 @@ int mvar_read   (MVar *mvar, void *localDataPtr) {
       memcpy(localDataPtr, mvar->dataPtr, mvar->storePtr->dataSize);
       r = WaitForSingleObject(mvar->protectReaders, INFINITE);
       assert( r == WAIT_OBJECT_0 );
-      int remRdrs = --(mvar->storePtr->pendingReaders);
+      --(mvar->storePtr->pendingReaders);
       r = ReleaseMutex(mvar->protectReaders);
       assert( r != 0 );
-      if ( signaled == WAIT_OBJECT_1 || remRdrs == 0) {
+      if ( signaled == WAIT_OBJECT_0 ) {
+        if (WaitForSingleObject(mvar->canReadS, 0) != WAIT_OBJECT_0) {
+          SetEvent(mvar->canTakeE);
+        }
+      } else if (signaled == WAIT_OBJECT_1 ) {
         SetEvent(mvar->canTakeE);
       }
       return 0;
     default:
 #ifdef NDEBUG
-      printf("WaitForSingleObject canReadE error: return %d; error code %d.\n", r, GetLastError());
+      printf("(mvar_read) WaitForMultipleObjects error: return %d; error code %d.\n", r, GetLastError());
 #endif
       return 1;
   }

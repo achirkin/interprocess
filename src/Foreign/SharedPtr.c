@@ -14,6 +14,17 @@
 #include <string.h>
 #include <assert.h>
 
+
+void *vk_shared_malloc(void *pUserData, size_t size, size_t alignment, int32_t allocationScope) {
+  return shared_malloc((SharedAllocator *)pUserData, size);
+}
+void *vk_shared_realloc(void *pUserData, void* pOriginal, size_t size, size_t alignment, int32_t allocationScope) {
+  return shared_realloc((SharedAllocator *)pUserData, pOriginal, size);
+}
+void  vk_shared_free(void *pUserData, void* pMemory) {
+  return shared_free((SharedAllocator *)pUserData, pMemory);
+}
+
 /* Default store size is at least the page size, which usualy is equal to 4KB.
  */
 #define DEFAULT_STORE_SIZE_FACTOR 12

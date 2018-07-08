@@ -54,10 +54,10 @@ library
     else
       c-sources:       src/Foreign/SharedPtrPosix.c
     if flag(dev)
-        cpp-options:   -DSTDOUT_SYSCALL_DEBUG
         ghc-options:   -O0
     else
         cpp-options:   -DNDEBUG
+        cc-options:    -DNDEBUG
         ghc-options:   -O2
 
 

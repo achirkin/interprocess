@@ -14,9 +14,12 @@ module Foreign.SharedPtr.C
   , p'shared_destroyAllocator, p'shared_getStoreName
   , p'shared_ptrToShPtr, p'shared_shPtrToPtr
   , p'shared_malloc, p'shared_realloc, p'shared_free
+
+  , p'vk_shared_malloc, p'vk_shared_realloc, p'vk_shared_free
   ) where
 
 import           Data.Data        (Data)
+import           Data.Void        (Void)
 import           Foreign.C.String
 import           Foreign.C.Types
 import           Foreign.Ptr
@@ -106,3 +109,19 @@ foreign import ccall unsafe "shared_realloc"
 foreign import ccall unsafe "shared_free"
   c'shared_free
     :: Allocator -> Ptr a -> IO ()
+
+
+
+foreign import ccall unsafe "&vk_shared_malloc"
+  p'vk_shared_malloc
+    :: FunPtr
+        (Ptr Void -> CSize -> CSize -> allocScope -> IO (Ptr Void))
+
+foreign import ccall unsafe "&vk_shared_realloc"
+  p'vk_shared_realloc
+    :: FunPtr
+        (Ptr Void -> Ptr Void -> CSize -> CSize -> allocScope -> IO (Ptr Void))
+
+foreign import ccall unsafe "&vk_shared_free"
+  p'vk_shared_free
+    :: FunPtr (Ptr Void -> Ptr Void -> IO ())

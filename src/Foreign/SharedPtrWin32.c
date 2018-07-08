@@ -1,7 +1,6 @@
 #include "SharedPtr.h"
-#ifdef STDOUT_SYSCALL_DEBUG
+#ifndef NDEBUG
 #include <stdio.h>
-#include <tchar.h>
 #endif
 
 void _SharedMutex_init(SharedMutex *mptr, void **privateMutexHandle, const int createNew) {
@@ -12,9 +11,9 @@ void _SharedMutex_init(SharedMutex *mptr, void **privateMutexHandle, const int c
     ( NULL    // default security attributes
     , FALSE   // initially not owned
     , mptr->mutexName );
-#ifdef STDOUT_SYSCALL_DEBUG
+#ifndef NDEBUG
   if (*privateMutexHandle == NULL) {
-    _tprintf(TEXT("CreateMutex error: %d\n"), GetLastError());
+    printf("CreateMutex error: %d\n", GetLastError());
   }
 #endif
 }
@@ -26,8 +25,8 @@ void _SharedMutex_destroy(SharedMutex *mptr, void **privateMutexHandle) {
 int _SharedMutex_lock(SharedMutex *mptr, void **privateMutexHandle) {
   DWORD r = WaitForSingleObject(*privateMutexHandle, INFINITE);
   if (r != WAIT_OBJECT_0) {
-#ifdef STDOUT_SYSCALL_DEBUG
-    _tprintf(TEXT("WaitForSingleObject mutex error: return %d; error code %d.\n"), r, GetLastError());
+#ifndef NDEBUG
+    printf("WaitForSingleObject mutex error: return %d; error code %d.\n", r, GetLastError());
 #endif
     return 1;
   } else {
@@ -38,8 +37,8 @@ int _SharedMutex_lock(SharedMutex *mptr, void **privateMutexHandle) {
 int _SharedMutex_unlock(SharedMutex *mptr, void **privateMutexHandle) {
   DWORD r = ReleaseMutex(*privateMutexHandle);
   if(r == 0) {
-#ifdef STDOUT_SYSCALL_DEBUG
-    _tprintf(TEXT("ReleaseMutex error: %d\n"), GetLastError());
+#ifndef NDEBUG
+    printf("ReleaseMutex error: %d\n", GetLastError());
 #endif
 	  return 1;
   } else {
@@ -58,8 +57,8 @@ HsPtr _store_alloc(const char *memBlockName, void **privateMutexHandle, size_t s
     , memBlockName);             // name of mapping object
 
   if (*privateMutexHandle == NULL) {
-#ifdef STDOUT_SYSCALL_DEBUG
-    _tprintf(TEXT("Could not create file mapping object (%d).\n"), GetLastError());
+#ifndef NDEBUG
+    printf("Could not create file mapping object (%d).\n", GetLastError());
 #endif
     return NULL;
   }
@@ -71,8 +70,8 @@ HsPtr _store_alloc(const char *memBlockName, void **privateMutexHandle, size_t s
     , size);
 
   if (rptr == NULL) {
-#ifdef STDOUT_SYSCALL_DEBUG
-	  _tprintf(TEXT("Could not map view of file (%d).\n"), GetLastError());
+#ifndef NDEBUG
+	  printf("Could not map view of file (%d).\n", GetLastError());
 #endif
     CloseHandle(*privateMutexHandle);
     return NULL;

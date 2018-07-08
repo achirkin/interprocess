@@ -102,3 +102,4 @@ test-suite StoredMVar
     build-depends:       base
                        , typed-process >= 0.2
                        , interprocess
+    ghc-options:         -threaded -Wall

@@ -15,6 +15,7 @@ import           Foreign.Ptr
 import           Foreign.Storable
 import           System.IO
 import           System.IO.Unsafe
+import           Text.Read
 
 #define HS_IMPORT_CONSTANTS_ONLY
 #include "SharedObjectName.h"
@@ -28,8 +29,24 @@ instance Show (SOName a) where
     showsPrec d (SOName a)
       = showParen (d >= 10) $ showString "SOName " . showsPrec 10 getstr
       where
-        getstr = unsafePerformIO $ withForeignPtr a peekCString
+        getstr = unsafePerformIO $ withForeignPtr a peekCAString
         {-# NOINLINE getstr #-}
+
+instance Read (SOName a) where
+    readPrec = parens $ prec 10 $ do
+        Ident "SOName" <- lexP
+        s <- step readPrec
+        return $ putstr s
+      where
+        writeStr [] n     ptr
+          = pokeElemOff ptr n 0 -- put end of string character
+        writeStr (c:cs) n ptr
+          = pokeElemOff ptr n (castCharToCChar c) >> writeStr cs (n+1) ptr
+        putstr s = unsafePerformIO $ do
+          n <- newEmptySOName
+          unsafeWithSOName n $ writeStr s 0
+          return n
+        {-# NOINLINE putstr #-}
 
 instance Eq (SOName a) where
     (SOName a) == (SOName b)

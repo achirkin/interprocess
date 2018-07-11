@@ -1,5 +1,5 @@
 name:                interprocess
-version:             0.2.0.0
+version:             0.2.0.1
 synopsis:            Shared memory and control structures for IPC
 description:         Provides portable shared memory allocator and some synchronization primitives.
                      Can be used for interprocess communication.

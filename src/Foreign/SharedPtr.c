@@ -152,7 +152,8 @@ SharedAllocData *_SharedAllocData_init(void **privateStoreHandle, void **mutexPr
   }
   memset(sdataPtr, 0, sizeof(SharedAllocData));
   SharedPtr curNode;
-  for(HsInt i = 0; i < WORD_SIZE_IN_BITS; i++) {
+  HsInt i;
+  for(i = 0; i < WORD_SIZE_IN_BITS; i++) {
     curNode = ((SharedPtr) &(sdataPtr->availStorage[i])) - ((SharedPtr) sdataPtr);
     sdataPtr->availStorage[i]
       = (struct ListNode)
@@ -228,7 +229,8 @@ void shared_destroyAllocator(SharedAllocator *aptr) {
   }
 
   // release all stores except the main one
-  for (HsWord8 storeId = DEFAULT_STORE_SIZE_FACTOR;
+  HsWord8 storeId;
+  for (storeId = DEFAULT_STORE_SIZE_FACTOR;
        storeId <= sdataPtr->largestStoreId;
        storeId++) {
     _store_free( sdataPtr->storeNames[storeId]

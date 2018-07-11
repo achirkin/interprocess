@@ -121,7 +121,7 @@ instance Monoid TestResult where
 
 displayResult :: TestResult -> String
 displayResult Success = "OK."
-displayResult (Failure s) = unlines $ ("Failure":) . map ("  " <>) . filter (not . null) $ lines s
+displayResult (Failure s) = unlines $ ("Failure":) . map (mappend "  ") . filter (not . null) $ lines s
 
 finish :: TestResult -> IO a
 finish Success     = exitSuccess
@@ -171,6 +171,6 @@ runSpecs f specs = do
 
         rx <- unsafeInterleaveIO $ Vanilla.takeMVar mr
         rxs <- go xs
-        return $ rx <> rxs
+        return $ mappend rx rxs
       where
         withI s = "[" ++ show i ++ "] " ++ s

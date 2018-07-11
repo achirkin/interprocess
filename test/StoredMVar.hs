@@ -1,22 +1,20 @@
 module Main (main) where
 
+import           Control.Concurrent                    (forkIO)
+import qualified Control.Concurrent.MVar               as Vanilla
 import           Control.Concurrent.Process.StoredMVar
-import qualified Control.Concurrent.MVar as Vanilla
-import           Control.Concurrent (forkIO)
-import Control.Monad (void, forM)
--- import           Control.Exception                     (SomeException, catch,
---                                                         displayException)
+import           Control.Exception
+import           Control.Monad                         (forM, void)
+import           Data.Monoid                           (First (..), Monoid (..))
+import           Data.Semigroup                        (Semigroup (..))
 import           Foreign.SharedObjectName
--- import           GHC.Environment                       (getFullArgs)
 import           System.Environment
 import           System.Exit
-import Data.Monoid
-import Text.Read (readMaybe)
+import           System.IO
+import           System.IO.Unsafe
+import           System.Mem
 import           System.Process.Typed
-import System.IO
-import Control.Exception
-import System.IO.Unsafe
-import System.Mem
+import           Text.Read                             (readMaybe)
 
 -- | A number of processes trying to do something concurrently.
 --   For example, read from the same StoredMVar.
@@ -74,7 +72,9 @@ run (ReadersTakers ref Reader) = do
   b <- readMVar mVar
   c <- readMVar mVar
   putStrLn $ "Reading: " ++ show (a,b,c)
-  return Success
+  return $ if a <= b && b <= c
+           then Success
+           else Failure "Three taken numbers must go ordered!"
 
 tests :: [IO ([TestSpec], IO ())]
 tests =
@@ -105,10 +105,13 @@ data TestResult
   | Failure String
   deriving (Eq, Ord, Show, Read)
 
+instance Semigroup TestResult where
+  (<>) = mappend
+
 instance Monoid TestResult where
   mempty = Success
-  mappend Success a = a
-  mappend (Failure s) Success = Failure s
+  mappend Success a               = a
+  mappend (Failure s) Success     = Failure s
   mappend (Failure s) (Failure t) = Failure $ unlines [s,t]
 
 displayResult :: TestResult -> String
@@ -116,7 +119,7 @@ displayResult Success = "OK."
 displayResult (Failure s) = unlines $ ("Failure":) . map ("  " <>) . filter (not . null) $ lines s
 
 finish :: TestResult -> IO a
-finish Success = exitSuccess
+finish Success     = exitSuccess
 finish (Failure s) = die s
 
 main :: IO ()
@@ -134,7 +137,7 @@ main = do
           fin
           return r
         case foldMap id results of
-          Success -> exitSuccess
+          Success   -> exitSuccess
           Failure _ -> exitFailure
 
 runSpecs :: FilePath -> [TestSpec] -> IO TestResult
@@ -158,7 +161,7 @@ runSpecs f specs = do
           ecode <- waitExitCode p
           evaluate $ foldr seq () errs
           Vanilla.putMVar mr $! case ecode of
-            ExitSuccess -> Success
+            ExitSuccess   -> Success
             ExitFailure _ -> Failure (unlines . map withI $ lines errs)
 
         rx <- unsafeInterleaveIO $ Vanilla.takeMVar mr

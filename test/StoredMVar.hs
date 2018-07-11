@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 module Main (main) where
 
 import           Control.Concurrent                    (forkIO)
@@ -6,7 +7,9 @@ import           Control.Concurrent.Process.StoredMVar
 import           Control.Exception
 import           Control.Monad                         (forM, void)
 import           Data.Monoid                           (First (..), Monoid (..))
+#if __GLASGOW_HASKELL__ >= 800
 import           Data.Semigroup                        (Semigroup (..))
+#endif
 import           Foreign.SharedObjectName
 import           System.Environment
 import           System.Exit
@@ -105,8 +108,10 @@ data TestResult
   | Failure String
   deriving (Eq, Ord, Show, Read)
 
+#if __GLASGOW_HASKELL__ >= 800
 instance Semigroup TestResult where
   (<>) = mappend
+#endif
 
 instance Monoid TestResult where
   mempty = Success

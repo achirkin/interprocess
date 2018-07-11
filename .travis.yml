@@ -8,8 +8,9 @@ ghc:
 
 install:
   - cabal update
-  - cabal build --enable-tests --dependencies-only
+  - cabal install --enable-tests --dependencies-only
 
 script:
+  - cabal configure --enable-tests
   - cabal build
   - cabal test

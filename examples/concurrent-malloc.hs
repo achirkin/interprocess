@@ -42,7 +42,7 @@ runA n = do
       putStrLn $ "[A] Malloc'ed addr: " ++ show ptr
       poke ptr n
 
-      ec' <- withProcess_ processBConfig $ \procB -> do
+      ec' <- withProcessWait_ processBConfig $ \procB -> do
 
         putStrLn $ "[A] Sending store name: "
                   ++ show (allocStoreName sa)

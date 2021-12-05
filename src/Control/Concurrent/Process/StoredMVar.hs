@@ -30,16 +30,16 @@ module Control.Concurrent.Process.StoredMVar
   , modifyMVar, modifyMVar_, modifyMVarMasked, modifyMVarMasked_
   ) where
 
-import           Control.Exception
-import           Control.Monad                     (when)
-import           Data.Data                         (Typeable)
-import           Foreign.C
-import           Foreign.ForeignPtr
-import           Foreign.Marshal.Alloc             (alloca)
-import           Foreign.Marshal.Array             (advancePtr, allocaArray)
-import           Foreign.Ptr
-import           Foreign.SharedObjectName.Internal
-import           Foreign.Storable
+import Control.Exception
+import Control.Monad                     (when)
+import Data.Data                         (Typeable)
+import Foreign.C
+import Foreign.ForeignPtr
+import Foreign.Marshal.Alloc             (alloca)
+import Foreign.Marshal.Array             (advancePtr, allocaArray)
+import Foreign.Ptr
+import Foreign.SharedObjectName.Internal
+import Foreign.Storable
 
 -- | Opaque implementation-dependent StoredMVar
 data StoredMVarT

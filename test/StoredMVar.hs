@@ -6,10 +6,7 @@ import qualified Control.Concurrent.MVar               as Vanilla
 import           Control.Concurrent.Process.StoredMVar
 import           Control.Exception
 import           Control.Monad                         (forM, void)
-import           Data.Monoid                           (First (..), Monoid (..))
-#if __GLASGOW_HASKELL__ >= 800
-import           Data.Semigroup                        (Semigroup (..))
-#endif
+import           Data.Monoid
 import           Foreign.SharedObjectName
 import           System.Environment
 import           System.Exit
@@ -108,16 +105,13 @@ data TestResult
   | Failure String
   deriving (Eq, Ord, Show, Read)
 
-#if __GLASGOW_HASKELL__ >= 800
 instance Semigroup TestResult where
-  (<>) = mappend
-#endif
+  Success <> a           = a
+  Failure s <> Success   = Failure s
+  Failure s <> Failure t = Failure $ unlines [s,t]
 
 instance Monoid TestResult where
   mempty = Success
-  mappend Success a               = a
-  mappend (Failure s) Success     = Failure s
-  mappend (Failure s) (Failure t) = Failure $ unlines [s,t]
 
 displayResult :: TestResult -> String
 displayResult Success = "OK."
@@ -160,7 +154,7 @@ runSpecs f specs = do
     go [] = return Success
     go ((i,x):xs) = do
         mr <- Vanilla.newEmptyMVar
-        void . forkIO $ withProcess (conf x) $ \p -> do
+        void . forkIO $ withProcessWait (conf x) $ \p -> do
           hGetContents (getStdout p) >>= mapM_ (putStrLn . withI) . lines
           errs <- hGetContents (getStderr p)
           ecode <- waitExitCode p

@@ -1,10 +1,12 @@
 language: haskell
 
 ghc:
-  - "7.10"
-  - "8.0"
-  - "8.2"
   - "8.4"
+  - "8.6"
+  - "8.8"
+  - "8.10"
+  - "9.0"
+  - "9.2"
 
 install:
   - cabal update

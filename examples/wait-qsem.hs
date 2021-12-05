@@ -85,5 +85,5 @@ withNProcesses :: Int
               -> ([Process stdin stdout stderr] -> IO a)
               -> IO a
 withNProcesses 0 _ k = k []
-withNProcesses n conf k = withProcess_ conf $ \p ->
+withNProcesses n conf k = withProcessWait_ conf $ \p ->
     withNProcesses (n-1) conf (k . (p:))

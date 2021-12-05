@@ -130,4 +130,4 @@ withProcesses ::  [ProcessConfig stdin stdout stderr]
               -> ([Process stdin stdout stderr] -> IO a)
               -> IO a
 withProcesses [] k = k []
-withProcesses (conf:cfs) k = withProcesses cfs $ \ps -> withProcess_ conf $ k . (:ps)
+withProcesses (conf:cfs) k = withProcesses cfs $ \ps -> withProcessWait_ conf $ k . (:ps)

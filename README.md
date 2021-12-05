@@ -1,6 +1,6 @@
 # interprocess
 [![Hackage](https://img.shields.io/hackage/v/interprocess.svg)](https://hackage.haskell.org/package/interprocess)
-[![Build Status](https://secure.travis-ci.org/achirkin/interprocess.svg)](http://travis-ci.org/achirkin/interprocess)
+[![Build Status](https://app.travis-ci.com/achirkin/interprocess.svg)](http://app.travis-ci.com/achirkin/interprocess)
 
 Platform-independent interprocess communication.
 

@@ -1,11 +1,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "common.h"
 #include "SharedObjectName.h"
-#ifndef NDEBUG
-// a bit of printf to track important events
-#include <stdio.h>
-#endif
 
 typedef struct MVar MVar;
 
@@ -89,9 +86,8 @@ MVar *mvar_new(size_t byteSize) {
       mvar->mvarName);  // name of mapping object
 
   if (mvar->dataStoreH == NULL) {
-#ifdef NDEBUG
-    printf("Could not create file mapping object (%d).\n", GetLastError());
-#endif
+    INTERPROCESS_LOG_DEBUG("Could not create file mapping object (%d).\n",
+                           GetLastError());
     free(mvar);
     return NULL;
   }
@@ -103,9 +99,8 @@ MVar *mvar_new(size_t byteSize) {
                                  0, 0, byteSize + 64);
 
   if (mvar->storePtr == NULL) {
-#ifdef NDEBUG
-    printf("Could not map view of file (%d).\n", GetLastError());
-#endif
+    INTERPROCESS_LOG_DEBUG("Could not map view of file (%d).\n",
+                           GetLastError());
     CloseHandle(mvar->dataStoreH);
     free(mvar);
     return NULL;
@@ -147,9 +142,8 @@ MVar *mvar_lookup(const char *name) {
       OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, mvar->mvarName);
 
   if (mvar->dataStoreH == NULL) {
-#ifdef NDEBUG
-    printf("Could not open file mapping object (%d).\n", GetLastError());
-#endif
+    INTERPROCESS_LOG_DEBUG("Could not open file mapping object (%d).\n",
+                           GetLastError());
     free(mvar);
     return NULL;
   }
@@ -161,9 +155,8 @@ MVar *mvar_lookup(const char *name) {
                                  0, 0, 64);
 
   if (mvar->storePtr == NULL) {
-#ifdef NDEBUG
-    printf("Could not map view of file (%d).\n", GetLastError());
-#endif
+    INTERPROCESS_LOG_DEBUG("Could not map view of file (%d).\n",
+                           GetLastError());
     CloseHandle(mvar->dataStoreH);
     free(mvar);
     return NULL;
@@ -178,9 +171,8 @@ MVar *mvar_lookup(const char *name) {
                                  0, 0, storeSize);
 
   if (mvar->storePtr == NULL) {
-#ifdef NDEBUG
-    printf("Could not map view of file (%d).\n", GetLastError());
-#endif
+    INTERPROCESS_LOG_DEBUG("Could not map view of file (%d).\n",
+                           GetLastError());
     CloseHandle(mvar->dataStoreH);
     free(mvar);
     return NULL;
@@ -220,10 +212,9 @@ void mvar_destroy(MVar *mvar) {
 int mvar_take(MVar *mvar, void *localDataPtr) {
   DWORD r = WaitForSingleObject(mvar->canTakeE, INFINITE);
   if (r != WAIT_OBJECT_0) {
-#ifdef NDEBUG
-    printf("WaitForSingleObject canTakeE error: return %d; error code %d.\n", r,
-           GetLastError());
-#endif
+    INTERPROCESS_LOG_DEBUG(
+        "WaitForSingleObject canTakeE error: return %d; error code %d.\n", r,
+        GetLastError());
     return 1;
   } else {
     memcpy(localDataPtr, mvar->dataPtr, mvar->storePtr->dataSize);
@@ -242,10 +233,9 @@ int mvar_trytake(MVar *mvar, void *localDataPtr) {
     case WAIT_TIMEOUT:
       return 1;
     default:
-#ifdef NDEBUG
-      printf("WaitForSingleObject canTakeE error: return %d; error code %d.\n",
-             r, GetLastError());
-#endif
+      INTERPROCESS_LOG_DEBUG(
+          "WaitForSingleObject canTakeE error: return %d; error code %d.\n", r,
+          GetLastError());
       return 1;
   }
 }
@@ -253,10 +243,9 @@ int mvar_trytake(MVar *mvar, void *localDataPtr) {
 int mvar_put(MVar *mvar, void *localDataPtr) {
   DWORD r = WaitForSingleObject(mvar->canPutE, INFINITE);
   if (r != WAIT_OBJECT_0) {
-#ifdef NDEBUG
-    printf("WaitForSingleObject canPutE error: return %d; error code %d.\n", r,
-           GetLastError());
-#endif
+    INTERPROCESS_LOG_DEBUG(
+        "WaitForSingleObject canPutE error: return %d; error code %d.\n", r,
+        GetLastError());
     return 1;
   } else {
     memcpy(mvar->dataPtr, localDataPtr, mvar->storePtr->dataSize);
@@ -295,10 +284,9 @@ int mvar_tryput(MVar *mvar, void *localDataPtr) {
     case WAIT_TIMEOUT:
       return 1;
     default:
-#ifdef NDEBUG
-      printf("WaitForSingleObject canTakeE error: return %d; error code %d.\n",
-             r, GetLastError());
-#endif
+      INTERPROCESS_LOG_DEBUG(
+          "WaitForSingleObject canTakeE error: return %d; error code %d.\n", r,
+          GetLastError());
       return 1;
   }
 }
@@ -328,12 +316,10 @@ int mvar_read(MVar *mvar, void *localDataPtr) {
       }
       return 0;
     default:
-#ifdef NDEBUG
-      printf(
+      INTERPROCESS_LOG_DEBUG(
           "(mvar_read) WaitForMultipleObjects error: return %d; error code "
           "%d.\n",
           r, GetLastError());
-#endif
       return 1;
   }
 }
@@ -348,10 +334,9 @@ int mvar_tryread(MVar *mvar, void *localDataPtr) {
     case WAIT_TIMEOUT:
       return 1;
     default:
-#ifdef NDEBUG
-      printf("WaitForSingleObject canTakeE error: return %d; error code %d.\n",
-             r, GetLastError());
-#endif
+      INTERPROCESS_LOG_DEBUG(
+          "WaitForSingleObject canTakeE error: return %d; error code %d.\n", r,
+          GetLastError());
       return 1;
   }
 }
@@ -359,10 +344,9 @@ int mvar_tryread(MVar *mvar, void *localDataPtr) {
 int mvar_swap(MVar *mvar, void *inPtr, void *outPtr) {
   DWORD r = WaitForSingleObject(mvar->canTakeE, INFINITE);
   if (r != WAIT_OBJECT_0) {
-#ifdef NDEBUG
-    printf("WaitForSingleObject canTakeE error: return %d; error code %d.\n", r,
-           GetLastError());
-#endif
+    INTERPROCESS_LOG_DEBUG(
+        "WaitForSingleObject canTakeE error: return %d; error code %d.\n", r,
+        GetLastError());
     return 1;
   } else {
     memcpy(outPtr, mvar->dataPtr, mvar->storePtr->dataSize);
@@ -383,10 +367,9 @@ int mvar_tryswap(MVar *mvar, void *inPtr, void *outPtr) {
     case WAIT_TIMEOUT:
       return 1;
     default:
-#ifdef NDEBUG
-      printf("WaitForSingleObject canTakeE error: return %d; error code %d.\n",
-             r, GetLastError());
-#endif
+      INTERPROCESS_LOG_DEBUG(
+          "WaitForSingleObject canTakeE error: return %d; error code %d.\n", r,
+          GetLastError());
       return 1;
   }
 }
@@ -479,7 +462,7 @@ MVar *mvar_new(size_t byteSize) {
 
   // init mutex and condition variables
   r = pthread_mutexattr_init(&(mvar->statePtr->mvMAttr));
-#ifndef NDEBUG
+#ifdef INTERPROCESS_DEBUG
   if (r == 0)
     r = pthread_mutexattr_settype(&(mvar->statePtr->mvMAttr),
                                   PTHREAD_MUTEX_ERRORCHECK);
@@ -560,16 +543,13 @@ void mvar_destroy(MVar *mvar) {
   usersLeft = --(mvar->statePtr->totalUsers);
   pthread_mutex_unlock(&(mvar->statePtr->mvMut));
   if (usersLeft > 0) {
-#ifndef NDEBUG
-    printf("Destroying local instance of mvar %s, %d users left.\n",
-           mvar->mvarName, usersLeft);
-#endif
+    INTERPROCESS_LOG_DEBUG(
+        "Destroying local instance of mvar %s, %d users left.\n",
+        mvar->mvarName, usersLeft);
     munmap(mvar->statePtr, storeSize);
   } else {
-#ifndef NDEBUG
-    printf("Destroying mvar %s globally (no other users left).\n",
-           mvar->mvarName);
-#endif
+    INTERPROCESS_LOG_DEBUG(
+        "Destroying mvar %s globally (no other users left).\n", mvar->mvarName);
     pthread_cond_destroy(&(mvar->statePtr->canTakeC));
     pthread_cond_destroy(&(mvar->statePtr->canPutC));
     pthread_condattr_destroy(&(mvar->statePtr->condAttr));

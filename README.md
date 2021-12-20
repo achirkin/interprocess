@@ -43,9 +43,9 @@ from Win32/POSIX in a platform-dependent way.
   * [x] Mutable variables (`MVar`-like) via `Storable` instance.
   * [ ] `Control.Concurrent.Chan`-like channels
   * [ ] More tests
-  * [ ] Ensure Win32 waiting on events interruptible
-        (Custom interrupt signal handler + WaitForMultipleObjects)
+  * [x] Ensure MVar waits are interruptible w.r.t. async exceptions on all platforms
   * [ ] Benchmarks
+
 
 ### Think about it
 

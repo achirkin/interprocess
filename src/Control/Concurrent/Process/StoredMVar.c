@@ -1,28 +1,46 @@
+#include <Rts.h>
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "common.h"
 #include "SharedObjectName.h"
+#include "common.h"
 
 typedef struct MVar MVar;
 
-MVar *mvar_new(size_t byteSize);
+MVar *mvar_new(size_t byteSize, int max_wait_ms);
 MVar *mvar_lookup(const char *name);
 void mvar_destroy(MVar *mvar);
 
-int mvar_take(MVar *mvar, void *localDataPtr);
+int mvar_take(MVar *mvar, void *localDataPtr, StgStablePtr tso);
 int mvar_trytake(MVar *mvar, void *localDataPtr);
-int mvar_put(MVar *mvar, void *localDataPtr);
+int mvar_put(MVar *mvar, void *localDataPtr, StgStablePtr tso);
 int mvar_tryput(MVar *mvar, void *localDataPtr);
-int mvar_read(MVar *mvar, void *localDataPtr);
+int mvar_read(MVar *mvar, void *localDataPtr, StgStablePtr tso);
 int mvar_tryread(MVar *mvar, void *localDataPtr);
-int mvar_swap(MVar *mvar, void *inPtr, void *outPtr);
+int mvar_swap(MVar *mvar, void *inPtr, void *outPtr, StgStablePtr tso);
 int mvar_tryswap(MVar *mvar, void *inPtr, void *outPtr);
 int mvar_isempty(MVar *mvar);
 
+/**
+ * The input is an StgTSO* wrapped in a stable pointer.
+ * The StgTSO object can be moved during GC, which can happen while we're
+ * in a safe/interruptible foreign call.
+ *
+ * By performing this check, I can find out if there are any pending async
+ * exceptions in the calling (and suspended) Haskell thread. I need this,
+ * because on Windows there seem to be no way to interrupt / check the
+ * interruption status in between `WaitForSingleObject` or alike using the
+ * provided GHC machinery (CancelSynchronousIo).
+ */
+bool has_blocked_exceptions(StgStablePtr tso) {
+  return (typeof(END_TSO_QUEUE))(
+             ((StgTSO *)deRefStablePtr(tso))->blocked_exceptions) !=
+         END_TSO_QUEUE;
+}
+
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32) || \
     defined(mingw32_HOST_OS)
-#include <assert.h>
 #include <windows.h>
 #ifndef WAIT_OBJECT_1
 #define WAIT_OBJECT_1 ((WAIT_OBJECT_0) + 1)
@@ -31,6 +49,12 @@ int mvar_isempty(MVar *mvar);
 typedef struct MVarState {
   size_t dataSize;
   int pendingReaders;
+  /**
+   * Maximum wait time in milliseconds.
+   * This determines maximum possible delay the mvar operation cancels in
+   * the event of an async exception thrown to the calling Haskell thread.
+   */
+  int maxWaitMs;
 } MVarState;
 
 typedef struct MVar {
@@ -63,7 +87,7 @@ typedef struct MVar {
   SharedObjectName mvarName;
 } MVar;
 
-MVar *mvar_new(size_t byteSize) {
+MVar *mvar_new(size_t byteSize, int max_wait_ms) {
   // allocate MVar
   MVar *mvar = malloc(sizeof(MVar));
   if (mvar == NULL) {
@@ -124,8 +148,8 @@ MVar *mvar_new(size_t byteSize) {
   mvar->protectReaders = CreateMutexA(NULL, FALSE, objName);
 
   // zero readers pending
-  *(mvar->storePtr) =
-      (struct MVarState){.dataSize = byteSize, .pendingReaders = 0};
+  *(mvar->storePtr) = (struct MVarState){
+      .dataSize = byteSize, .pendingReaders = 0, .maxWaitMs = max_wait_ms};
 
   return mvar;
 }
@@ -209,8 +233,13 @@ void mvar_destroy(MVar *mvar) {
   free(mvar);
 }
 
-int mvar_take(MVar *mvar, void *localDataPtr) {
-  DWORD r = WaitForSingleObject(mvar->canTakeE, INFINITE);
+int mvar_take(MVar *mvar, void *localDataPtr, StgStablePtr tso) {
+  DWORD r;
+  do {
+    r = WaitForSingleObject(mvar->canTakeE, mvar->storePtr->maxWaitMs);
+    if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso))
+      return EINTR;
+  } while (r == WAIT_TIMEOUT);
   if (r != WAIT_OBJECT_0) {
     INTERPROCESS_LOG_DEBUG(
         "WaitForSingleObject canTakeE error: return %d; error code %d.\n", r,
@@ -240,8 +269,13 @@ int mvar_trytake(MVar *mvar, void *localDataPtr) {
   }
 }
 
-int mvar_put(MVar *mvar, void *localDataPtr) {
-  DWORD r = WaitForSingleObject(mvar->canPutE, INFINITE);
+int mvar_put(MVar *mvar, void *localDataPtr, StgStablePtr tso) {
+  DWORD r;
+  do {
+    r = WaitForSingleObject(mvar->canPutE, mvar->storePtr->maxWaitMs);
+    if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso))
+      return EINTR;
+  } while (r == WAIT_TIMEOUT);
   if (r != WAIT_OBJECT_0) {
     INTERPROCESS_LOG_DEBUG(
         "WaitForSingleObject canPutE error: return %d; error code %d.\n", r,
@@ -250,7 +284,11 @@ int mvar_put(MVar *mvar, void *localDataPtr) {
   } else {
     memcpy(mvar->dataPtr, localDataPtr, mvar->storePtr->dataSize);
     // first check readers, and only then, maybe allow takers
-    r = WaitForSingleObject(mvar->protectReaders, INFINITE);
+    do {
+      r = WaitForSingleObject(mvar->protectReaders, mvar->storePtr->maxWaitMs);
+      if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso))
+        return EINTR;
+    } while (r == WAIT_TIMEOUT);
     assert(r == WAIT_OBJECT_0);
     int remRdrs = mvar->storePtr->pendingReaders;
     r = ReleaseMutex(mvar->protectReaders);
@@ -291,18 +329,32 @@ int mvar_tryput(MVar *mvar, void *localDataPtr) {
   }
 }
 
-int mvar_read(MVar *mvar, void *localDataPtr) {
-  DWORD r = WaitForSingleObject(mvar->protectReaders, INFINITE);
+int mvar_read(MVar *mvar, void *localDataPtr, StgStablePtr tso) {
+  DWORD r;
+  do {
+    r = WaitForSingleObject(mvar->protectReaders, mvar->storePtr->maxWaitMs);
+    if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso))
+      return EINTR;
+  } while (r == WAIT_TIMEOUT);
   assert(r == WAIT_OBJECT_0);
   mvar->storePtr->pendingReaders++;
   r = ReleaseMutex(mvar->protectReaders);
   assert(r != 0);
-  DWORD signaled = WaitForMultipleObjects(2, (HANDLE *)mvar, FALSE, INFINITE);
+  DWORD signaled;
+  do {
+    signaled = WaitForMultipleObjects(2, (HANDLE *)mvar, FALSE,  mvar->storePtr->maxWaitMs);
+    if (signaled == WAIT_TIMEOUT && has_blocked_exceptions(tso))
+      return EINTR;
+  } while (signaled == WAIT_TIMEOUT);
   switch (signaled) {
     case WAIT_OBJECT_0:
     case WAIT_OBJECT_1:
       memcpy(localDataPtr, mvar->dataPtr, mvar->storePtr->dataSize);
-      r = WaitForSingleObject(mvar->protectReaders, INFINITE);
+      do {
+        r = WaitForSingleObject(mvar->protectReaders, mvar->storePtr->maxWaitMs);
+        if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso))
+          return EINTR;
+      } while (r == WAIT_TIMEOUT);
       assert(r == WAIT_OBJECT_0);
       --(mvar->storePtr->pendingReaders);
       r = ReleaseMutex(mvar->protectReaders);
@@ -341,8 +393,13 @@ int mvar_tryread(MVar *mvar, void *localDataPtr) {
   }
 }
 
-int mvar_swap(MVar *mvar, void *inPtr, void *outPtr) {
-  DWORD r = WaitForSingleObject(mvar->canTakeE, INFINITE);
+int mvar_swap(MVar *mvar, void *inPtr, void *outPtr, StgStablePtr tso) {
+  DWORD r;
+  do {
+    r = WaitForSingleObject(mvar->canTakeE, mvar->storePtr->maxWaitMs);
+    if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso))
+      return EINTR;
+  } while (r == WAIT_TIMEOUT);
   if (r != WAIT_OBJECT_0) {
     INTERPROCESS_LOG_DEBUG(
         "WaitForSingleObject canTakeE error: return %d; error code %d.\n", r,
@@ -403,18 +460,23 @@ typedef struct MVarState {
   int isFull;
   int pendingReaders;
   int totalUsers;
+  /**
+   * Maximum wait time in milliseconds.
+   * This determines maximum possible delay the mvar operation cancels in
+   * the event of an async exception thrown to the calling Haskell thread.
+   */
+  int maxWaitMs;
 } MVarState;
 
 typedef struct MVar {
-  /* State is stored in the shared data area, accessed by all threads.
-     It has a fixed size and kept at the beginning of a shared memory region.
+  /**
+   * State is stored in the shared data area, accessed by all threads.
+   * It has a fixed size and kept at the beginning of a shared memory region.
    */
   MVarState *statePtr;
-  /* Actual data is stored next to the MVarState
-   */
+  /** Actual data is stored next to the MVarState */
   void *dataPtr;
-  /* Name of the shared memory region, used to share mvar across processes.
-   */
+  /** Name of the shared memory region, used to share mvar across processes. */
   SharedObjectName mvarName;
 } MVar;
 
@@ -424,7 +486,7 @@ size_t mvar_state_size64() {
   return (x + 63) & (~63);
 }
 
-MVar *mvar_new(size_t byteSize) {
+MVar *mvar_new(size_t byteSize, int max_wait_ms) {
   int r = 0;
   // allocate MVar
   MVar *mvar = malloc(sizeof(MVar));
@@ -457,8 +519,11 @@ MVar *mvar_new(size_t byteSize) {
   mvar->dataPtr = ((void *)(mvar->statePtr)) + dataShift;
 
   // setup state
-  *(mvar->statePtr) = (struct MVarState){
-      .isFull = 0, .pendingReaders = 0, .dataSize = byteSize, .totalUsers = 1};
+  *(mvar->statePtr) = (struct MVarState){.isFull = 0,
+                                         .pendingReaders = 0,
+                                         .dataSize = byteSize,
+                                         .totalUsers = 1,
+                                         .maxWaitMs = max_wait_ms};
 
   // init mutex and condition variables
   r = pthread_mutexattr_init(&(mvar->statePtr->mvMAttr));
@@ -561,179 +626,149 @@ void mvar_destroy(MVar *mvar) {
   free(mvar);
 }
 
-static inline void finilize_MASK_SIGPIPE(sigset_t **origsetp) {
-  pthread_sigmask(SIG_SETMASK, *origsetp, NULL);
-};
-
-/*
- * GHC unterruptible call sends a SIGPIPE signal when it wants to cancel the
- * foreign call. But pthread_* functions don't EINTR. To account for that, I
- * mask the SIGPIPE for the duration of the call, but check the signals from
- * time to time. Thus, in the case of the haskell cancel exception, this
- * call would block for the time specified in `pthread_cond_timedwait` at
- * most.
- *
- * See also: https://github.com/achirkin/interprocess/issues/1
- */
-#define MASK_SIGPIPE()                                  \
-  sigset_t origset;                                     \
-  {                                                     \
-    sigset_t tempset;                                   \
-    sigemptyset(&tempset);                              \
-    sigaddset(&tempset, SIGPIPE);                       \
-    int r = 0;                                          \
-    r = pthread_sigmask(SIG_BLOCK, &tempset, &origset); \
-    if (r != 0) return r;                               \
-  }                                                     \
-  __attribute__((cleanup(finilize_MASK_SIGPIPE))) sigset_t *origsetp = &origset
-
-#define ASSERT_NO_PENDING_SIGPIPE()                        \
-  {                                                        \
-    sigset_t tempset;                                      \
-    int r = sigpending(&tempset);                          \
-    if (r != 0) return r;                                  \
-    if (sigismember(&tempset, SIGPIPE) != 0) return EINTR; \
-  }
-
 static inline void finilize_USE_MUTEX(pthread_mutex_t **mp) {
   pthread_mutex_unlock(*mp);
 }
 
-#define USE_MUTEX(mvar)                               \
-  {                                                   \
-    int r = 0;                                        \
-    r = pthread_mutex_lock(&(mvar->statePtr->mvMut)); \
-    if (r != 0) return r;                             \
-  }                                                   \
-  __attribute__((cleanup(finilize_USE_MUTEX)))        \
-      pthread_mutex_t *mut##__LINE__ = &(mvar->statePtr->mvMut);
+#define USE_MUTEX(state)                                               \
+  {                                                                    \
+    int r = 0;                                                         \
+    r = pthread_mutex_lock(&(state->mvMut));                           \
+    if (r != 0) return r;                                              \
+  }                                                                    \
+  __attribute__((cleanup(finilize_USE_MUTEX))) pthread_mutex_t *_mut = \
+      &(state->mvMut);
 
-#define WAIT_A_SEC(cond, mut)                                 \
+#define WAIT_A_BIT(cond, mut, ms)                             \
   {                                                           \
     struct timespec time_to_wait;                             \
     clock_gettime(CLOCK_REALTIME, &time_to_wait);             \
-    time_to_wait.tv_sec += 1;                                 \
+    div_t t = div(ms, 1000);                                  \
+    time_to_wait.tv_sec += t.quot;                            \
+    time_to_wait.tv_nsec += ((long)(t.rem)) * 1000000;        \
     int r = pthread_cond_timedwait(cond, mut, &time_to_wait); \
     if (r != 0 && r != ETIMEDOUT) return r;                   \
   }
 
-int mvar_take(MVar *mvar, void *localDataPtr) {
-  MASK_SIGPIPE();
-  USE_MUTEX(mvar);
-  while (!(mvar->statePtr->isFull) || mvar->statePtr->pendingReaders > 0) {
-    if (mvar->statePtr->pendingReaders > 0)
-      pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
-    WAIT_A_SEC(&(mvar->statePtr->canTakeC), &(mvar->statePtr->mvMut));
-    ASSERT_NO_PENDING_SIGPIPE();
+int mvar_take(MVar *mvar, void *localDataPtr, StgStablePtr tso) {
+  MVarState *state = mvar->statePtr;
+  USE_MUTEX(state);
+  while (!(state->isFull) || state->pendingReaders > 0) {
+    if (state->pendingReaders > 0) pthread_cond_broadcast(&(state->canTakeC));
+    WAIT_A_BIT(&(state->canTakeC), &(state->mvMut), state->maxWaitMs);
+    if (has_blocked_exceptions(tso)) return EINTR;
   }
-  memcpy(localDataPtr, mvar->dataPtr, mvar->statePtr->dataSize);
-  mvar->statePtr->isFull = 0;
-  pthread_cond_signal(&(mvar->statePtr->canPutC));
+  memcpy(localDataPtr, mvar->dataPtr, state->dataSize);
+  state->isFull = 0;
+  pthread_cond_signal(&(state->canPutC));
   return 0;
 }
 
 int mvar_trytake(MVar *mvar, void *localDataPtr) {
-  USE_MUTEX(mvar);
+  MVarState *state = mvar->statePtr;
+  USE_MUTEX(state);
   // shortcut if is empty
-  if (!(mvar->statePtr->isFull)) return 1;
-  while (mvar->statePtr->pendingReaders > 0) {
+  if (!(state->isFull)) return 1;
+  while (state->pendingReaders > 0) {
     // make sure readers do not sleep
-    pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
+    pthread_cond_broadcast(&(state->canTakeC));
     // last reader should wake me up, wait for it.
-    WAIT_A_SEC(&(mvar->statePtr->canTakeC), &(mvar->statePtr->mvMut));
+    WAIT_A_BIT(&(state->canTakeC), &(state->mvMut), state->maxWaitMs);
     // repeat emptyness check (if another trytake was faster)
-    if (!(mvar->statePtr->isFull)) {
+    if (!(state->isFull)) {
       return 1;
     }
   }
-  memcpy(localDataPtr, mvar->dataPtr, mvar->statePtr->dataSize);
-  mvar->statePtr->isFull = 0;
-  pthread_cond_signal(&(mvar->statePtr->canPutC));
+  memcpy(localDataPtr, mvar->dataPtr, state->dataSize);
+  state->isFull = 0;
+  pthread_cond_signal(&(state->canPutC));
   return 0;
 }
 
-int mvar_put(MVar *mvar, void *localDataPtr) {
-  MASK_SIGPIPE();
-  USE_MUTEX(mvar);
-  while (mvar->statePtr->isFull) {
-    WAIT_A_SEC(&(mvar->statePtr->canPutC), &(mvar->statePtr->mvMut));
-    ASSERT_NO_PENDING_SIGPIPE();
+int mvar_put(MVar *mvar, void *localDataPtr, StgStablePtr tso) {
+  MVarState *state = mvar->statePtr;
+  USE_MUTEX(state);
+  while (state->isFull) {
+    WAIT_A_BIT(&(state->canPutC), &(state->mvMut), state->maxWaitMs);
+    if (has_blocked_exceptions(tso)) return EINTR;
   }
-  memcpy(mvar->dataPtr, localDataPtr, mvar->statePtr->dataSize);
-  mvar->statePtr->isFull = 1;
-  pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
+  memcpy(mvar->dataPtr, localDataPtr, state->dataSize);
+  state->isFull = 1;
+  pthread_cond_broadcast(&(state->canTakeC));
   return 0;
 }
 
 int mvar_tryput(MVar *mvar, void *localDataPtr) {
-  USE_MUTEX(mvar);
+  MVarState *state = mvar->statePtr;
+  USE_MUTEX(state);
   // shortcut if is full
-  if (mvar->statePtr->isFull) return 1;
-  memcpy(mvar->dataPtr, localDataPtr, mvar->statePtr->dataSize);
-  mvar->statePtr->isFull = 1;
-  pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
+  if (state->isFull) return 1;
+  memcpy(mvar->dataPtr, localDataPtr, state->dataSize);
+  state->isFull = 1;
+  pthread_cond_broadcast(&(state->canTakeC));
   return 0;
 }
 
 // Split mvar_read/worker to make sure pendingReaders counter is never leaked
-static inline int mvar_read_worker(MVar *mvar, void *localDataPtr) {
-  while (!(mvar->statePtr->isFull)) {
-    WAIT_A_SEC(&(mvar->statePtr->canTakeC), &(mvar->statePtr->mvMut));
-    ASSERT_NO_PENDING_SIGPIPE();
+static inline int mvar_read_loop(MVarState *state, StgStablePtr tso) {
+  while (!(state->isFull)) {
+    WAIT_A_BIT(&(state->canTakeC), &(state->mvMut), state->maxWaitMs);
+    if (has_blocked_exceptions(tso)) return EINTR;
   }
-  memcpy(localDataPtr, mvar->dataPtr, mvar->statePtr->dataSize);
   return 0;
 }
 
-int mvar_read(MVar *mvar, void *localDataPtr) {
-  MASK_SIGPIPE();
-  USE_MUTEX(mvar);
-  mvar->statePtr->pendingReaders++;
-  int r = mvar_read_worker(mvar, localDataPtr);
-  if ((--(mvar->statePtr->pendingReaders)) == 0)
-    pthread_cond_signal(&(mvar->statePtr->canTakeC));
+int mvar_read(MVar *mvar, void *localDataPtr, StgStablePtr tso) {
+  MVarState *state = mvar->statePtr;
+  USE_MUTEX(state);
+  state->pendingReaders++;
+  int r = mvar_read_loop(state, tso);
+  if (r == 0) memcpy(localDataPtr, mvar->dataPtr, state->dataSize);
+  if ((--(state->pendingReaders)) == 0) pthread_cond_signal(&(state->canTakeC));
   return r;
 }
 
 int mvar_tryread(MVar *mvar, void *localDataPtr) {
-  USE_MUTEX(mvar);
+  MVarState *state = mvar->statePtr;
+  USE_MUTEX(state);
   // shortcut if is empty
-  if (!(mvar->statePtr->isFull)) return 1;
-  memcpy(localDataPtr, mvar->dataPtr, mvar->statePtr->dataSize);
+  if (!(state->isFull)) return 1;
+  memcpy(localDataPtr, mvar->dataPtr, state->dataSize);
   return 0;
 }
 
-int mvar_swap(MVar *mvar, void *inPtr, void *outPtr) {
-  MASK_SIGPIPE();
-  USE_MUTEX(mvar);
-  while (!(mvar->statePtr->isFull) || mvar->statePtr->pendingReaders > 0) {
-    if (mvar->statePtr->pendingReaders > 0) {
-      pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
+int mvar_swap(MVar *mvar, void *inPtr, void *outPtr, StgStablePtr tso) {
+  MVarState *state = mvar->statePtr;
+  USE_MUTEX(state);
+  while (!(state->isFull) || state->pendingReaders > 0) {
+    if (state->pendingReaders > 0) {
+      pthread_cond_broadcast(&(state->canTakeC));
     }
-    WAIT_A_SEC(&(mvar->statePtr->canTakeC), &(mvar->statePtr->mvMut));
-    ASSERT_NO_PENDING_SIGPIPE();
+    WAIT_A_BIT(&(state->canTakeC), &(state->mvMut), state->maxWaitMs);
+    if (has_blocked_exceptions(tso)) return EINTR;
   }
-  memcpy(outPtr, mvar->dataPtr, mvar->statePtr->dataSize);
-  memcpy(mvar->dataPtr, inPtr, mvar->statePtr->dataSize);
-  pthread_cond_signal(&(mvar->statePtr->canTakeC));
+  memcpy(outPtr, mvar->dataPtr, state->dataSize);
+  memcpy(mvar->dataPtr, inPtr, state->dataSize);
+  pthread_cond_signal(&(state->canTakeC));
   return 0;
 }
 
 int mvar_tryswap(MVar *mvar, void *inPtr, void *outPtr) {
-  USE_MUTEX(mvar);
+  MVarState *state = mvar->statePtr;
+  USE_MUTEX(state);
   // shortcut if is empty
-  if (!(mvar->statePtr->isFull)) return 1;
-  while (mvar->statePtr->pendingReaders > 0) {
+  if (!(state->isFull)) return 1;
+  while (state->pendingReaders > 0) {
     // make sure readers do not sleep
-    pthread_cond_broadcast(&(mvar->statePtr->canTakeC));
+    pthread_cond_broadcast(&(state->canTakeC));
     // last reader should wake me up, wait for it.
-    WAIT_A_SEC(&(mvar->statePtr->canTakeC), &(mvar->statePtr->mvMut));
+    WAIT_A_BIT(&(state->canTakeC), &(state->mvMut), state->maxWaitMs);
     // repeat emptyness check (if another trytake was faster)
-    if (!(mvar->statePtr->isFull)) return 1;
+    if (!(state->isFull)) return 1;
   }
-  memcpy(outPtr, mvar->dataPtr, mvar->statePtr->dataSize);
-  memcpy(mvar->dataPtr, inPtr, mvar->statePtr->dataSize);
-  pthread_cond_signal(&(mvar->statePtr->canPutC));
+  memcpy(outPtr, mvar->dataPtr, state->dataSize);
+  memcpy(mvar->dataPtr, inPtr, state->dataSize);
+  pthread_cond_signal(&(state->canPutC));
   return 0;
 }
 

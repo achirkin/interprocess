@@ -1,5 +1,9 @@
-{-# LANGUAGE InterruptibleFFI    #-}
-{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE GHCForeignImportPrim #-}
+{-# LANGUAGE MagicHash            #-}
+{-# LANGUAGE ScopedTypeVariables  #-}
+{-# LANGUAGE UnboxedTuples        #-}
+{-# LANGUAGE UnliftedFFITypes     #-}
+
 -----------------------------------------------------------------------------
 -- |
 --   This module is an adaptation of `Control.Concurrent.MVar` to an
@@ -33,6 +37,7 @@ module Control.Concurrent.Process.StoredMVar
 import Control.Exception
 import Control.Monad                     (when)
 import Data.Data                         (Typeable)
+import Data.Maybe                        (fromMaybe)
 import Foreign.C
 import Foreign.ForeignPtr
 import Foreign.Marshal.Alloc             (alloca)
@@ -40,6 +45,13 @@ import Foreign.Marshal.Array             (advancePtr, allocaArray)
 import Foreign.Ptr
 import Foreign.SharedObjectName.Internal
 import Foreign.Storable
+import System.Environment                (lookupEnv)
+import Text.Read                         (readMaybe)
+
+import GHC.Exts (Addr#, Int (..), Int#, RealWorld, State#)
+import GHC.IO   (IO (..))
+import GHC.Ptr  (Ptr (..))
+
 
 -- | Opaque implementation-dependent StoredMVar
 data StoredMVarT
@@ -59,8 +71,8 @@ data StoredMVar a
 -- | Create a 'StoredMVar' which is initially empty.
 newEmptyMVar :: forall a . Storable a => IO (StoredMVar a)
 newEmptyMVar = mask_ $ do
-    mvar <- checkNullPointer "newEmptyMVar"
-          . c'mvar_new . fromIntegral $ sizeOf (undefined :: a)
+    t <- fromMaybe 100 . (>>= readMaybe) <$> lookupEnv "INTEPROCESS_MAX_ERR_WAIT_MS"
+    mvar <- checkNullPointer "newEmptyMVar" $ c'mvar_new (fromIntegral (sizeOf (undefined :: a))) t
     n <- newEmptySOName
     unsafeWithSOName n $ c'mvar_name mvar
     StoredMVar n <$> newForeignPtr p'mvar_destroy mvar
@@ -111,7 +123,7 @@ isEmptyMVar (StoredMVar _ fp) = withForeignPtr fp $ fmap (0 /=) . c'mvar_isempty
 --
 takeMVar :: Storable a => StoredMVar a -> IO a
 takeMVar (StoredMVar _ fp) = mask_ $ withForeignPtr fp $ \p -> alloca $ \lp -> do
-    r <- c'mvar_take p lp
+    r <- cmmOp (cmm'mvar_take (unptr p) (unptr lp))
     if r == 0
     then peek lp
     else throwErrno $ "takeMVar failed with code " ++ show r
@@ -127,7 +139,7 @@ takeMVar (StoredMVar _ fp) = mask_ $ withForeignPtr fp $ \p -> alloca $ \lp -> d
 --
 readMVar :: Storable a => StoredMVar a -> IO a
 readMVar (StoredMVar _ fp) = mask_ $ withForeignPtr fp $ \p -> alloca $ \lp -> do
-    r <- c'mvar_read p lp
+    r <- cmmOp (cmm'mvar_read (unptr p) (unptr lp))
     if r == 0
     then peek lp
     else throwErrno $ "readMVar failed with code " ++ show r
@@ -141,7 +153,7 @@ swapMVar (StoredMVar _ fp) x
   = mask_ $ withForeignPtr fp $ \p -> allocaArray 2 $ \inp -> do
     let outp = advancePtr inp 1
     poke inp x
-    r <- c'mvar_swap p inp outp
+    r <- cmmOp (cmm'mvar_swap (unptr p) (unptr inp) (unptr outp))
     if r == 0
     then peek outp
     else throwErrno $ "swapMVar failed with code " ++ show r
@@ -162,7 +174,7 @@ swapMVar (StoredMVar _ fp) x
 putMVar :: Storable a => StoredMVar a -> a -> IO ()
 putMVar (StoredMVar _ fp) x = mask_ $ withForeignPtr fp $ \p -> alloca $ \lp -> do
     poke lp x
-    r <- c'mvar_put p lp
+    r <- cmmOp (cmm'mvar_put (unptr p) (unptr lp))
     when (r /= 0) $ throwErrno $ "putMVar failed with code " ++ show r
 {-# NOINLINE putMVar #-}
 
@@ -225,7 +237,7 @@ checkNullPointer s k = do
 
 
 foreign import ccall unsafe "mvar_new"
-  c'mvar_new :: CSize -> IO (Ptr StoredMVarT)
+  c'mvar_new :: CSize -> CInt -> IO (Ptr StoredMVarT)
 
 foreign import ccall unsafe "mvar_lookup"
   c'mvar_lookup :: CString -> IO (Ptr StoredMVarT)
@@ -236,35 +248,35 @@ foreign import ccall unsafe "&mvar_destroy"
 foreign import ccall unsafe "mvar_name"
   c'mvar_name :: Ptr StoredMVarT -> CString -> IO ()
 
--- | Waits a lot and should be interruptible
-foreign import ccall interruptible "mvar_take"
-  c'mvar_take :: Ptr StoredMVarT -> Ptr a -> IO CInt
--- | Waits a bit and may be unsafe
+-- These wait a bit and thus may be unsafe
 foreign import ccall unsafe "mvar_trytake"
   c'mvar_trytake :: Ptr StoredMVarT -> Ptr a -> IO CInt
--- | Waits a lot and should be interruptible
-foreign import ccall interruptible "mvar_put"
-  c'mvar_put :: Ptr StoredMVarT -> Ptr a -> IO CInt
--- | Waits a bit and may be unsafe
 foreign import ccall unsafe "mvar_tryput"
   c'mvar_tryput :: Ptr StoredMVarT -> Ptr a -> IO CInt
--- | Waits a lot and should be interruptible
-foreign import ccall interruptible "mvar_read"
-  c'mvar_read :: Ptr StoredMVarT -> Ptr a -> IO CInt
--- | Does not wait and can be unsafe
 foreign import ccall unsafe "mvar_tryread"
   c'mvar_tryread :: Ptr StoredMVarT -> Ptr a -> IO CInt
--- | Waits a lot and should be interruptible
-foreign import ccall interruptible "mvar_swap"
-  c'mvar_swap :: Ptr StoredMVarT -> Ptr a -> Ptr a -> IO CInt
--- | Waits a bit and may be unsafe
 foreign import ccall unsafe "mvar_tryswap"
   c'mvar_tryswap :: Ptr StoredMVarT -> Ptr a -> Ptr a -> IO CInt
--- | Does not wait and can be unsafe
 foreign import ccall unsafe "mvar_isempty"
   c'mvar_isempty :: Ptr StoredMVarT -> IO CInt
 
 
+-- These wait a lot and should be interruptible.
+-- I need the thread state inside these on the C side, so there are C-- helpers.
+foreign import prim "cmm_mvar_take"
+  cmm'mvar_take :: Addr# -> Addr# -> State# RealWorld -> (# State# RealWorld, Int# #)
+foreign import prim "cmm_mvar_put"
+  cmm'mvar_put :: Addr# -> Addr# -> State# RealWorld -> (# State# RealWorld, Int# #)
+foreign import prim "cmm_mvar_read"
+  cmm'mvar_read :: Addr# -> Addr# -> State# RealWorld -> (# State# RealWorld, Int# #)
+foreign import prim "cmm_mvar_swap"
+  cmm'mvar_swap :: Addr# -> Addr# -> Addr# -> State# RealWorld -> (# State# RealWorld, Int# #)
+
+cmmOp :: (State# RealWorld -> (# State# RealWorld, Int# #)) -> IO Int
+cmmOp op = IO (\s0 -> case op s0 of (# s1, code #) -> (# s1, I# code #))
+
+unptr :: Ptr a -> Addr#
+unptr (Ptr p) = p
 
 -- | 'withMVar' is an exception-safe wrapper for operating on the contents
 --   of an 'StoredMVar'.  This operation is exception-safe: it will replace the

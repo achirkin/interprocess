@@ -1,0 +1,37 @@
+#include "Cmm.h"
+
+cmm_mvar_take(W_ mvar, W_ localDataPtr) {
+  W_ sptr;
+  CInt r;
+  ("ptr" sptr) = ccall getStablePtr(CurrentTSO "ptr") "unsafe";
+  (r) = ccall mvar_take (mvar "ptr", localDataPtr "ptr", sptr "ptr") "safe";
+  ccall freeStablePtr (sptr "ptr") "unsafe";
+  return (TO_W_(r));
+}
+
+cmm_mvar_put(W_ mvar, W_ localDataPtr) {
+  W_ sptr;
+  CInt r;
+  ("ptr" sptr) = ccall getStablePtr(CurrentTSO "ptr") "unsafe";
+  (r) = ccall mvar_put (mvar "ptr", localDataPtr "ptr", sptr "ptr") "safe";
+  ccall freeStablePtr (sptr "ptr") "unsafe";
+  return (TO_W_(r));
+}
+
+cmm_mvar_read(W_ mvar, W_ localDataPtr) {
+  W_ sptr;
+  CInt r;
+  ("ptr" sptr) = ccall getStablePtr(CurrentTSO "ptr") "unsafe";
+  (r) = ccall mvar_read (mvar "ptr", localDataPtr "ptr", sptr "ptr") "safe";
+  ccall freeStablePtr (sptr "ptr") "unsafe";
+  return (TO_W_(r));
+}
+
+cmm_mvar_swap(W_ mvar, W_ inPtr, W_ outPtr) {
+  W_ sptr;
+  CInt r;
+  ("ptr" sptr) = ccall getStablePtr(CurrentTSO "ptr") "unsafe";
+  (r) = ccall mvar_swap (mvar "ptr", inPtr "ptr", outPtr "ptr", sptr "ptr") "safe";
+  ccall freeStablePtr (sptr "ptr") "unsafe";
+  return (TO_W_(r));
+}

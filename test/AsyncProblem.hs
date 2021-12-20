@@ -8,9 +8,9 @@ import System.Exit
 main :: IO ()
 main = do
   locked <- async (takeMVar =<< newEmptyMVar :: IO Int)
-  threadDelay (550000 :: Int)
+  threadDelay (55000 :: Int)
   killed <- async $ cancel locked
-  threadDelay (550000 :: Int)
+  threadDelay (55000 :: Int)
   r <- poll killed
   case r of
     Nothing -> exitFailure

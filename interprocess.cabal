@@ -1,3 +1,4 @@
+cabal-version:       3.0
 name:                interprocess
 version:             0.2.1.0
 synopsis:            Shared memory and control structures for IPC
@@ -5,14 +6,13 @@ description:         Provides portable shared memory allocator and some synchron
                      Can be used for interprocess communication.
                      Refer to README.md for further information.
 homepage:            https://github.com/achirkin/interprocess
-license:             BSD3
+license:             BSD-3-Clause
 license-file:        LICENSE
 author:              Artem Chirkin
 maintainer:          chirkin@arch.ethz.ch
 copyright:           (c) 2018 Artem Chirkin
 category:            system
 build-type:          Simple
-cabal-version:       >=1.10
 extra-source-files:
     README.md
     cbits/SharedObjectName.c
@@ -49,12 +49,13 @@ library
                        src/Control/Concurrent/Process/StoredMVar.c
                        src/Control/Concurrent/Process/QSem.c
                        src/Foreign/SharedPtr.c
+    cmm-sources:       src/Control/Concurrent/Process/StoredMVarPrim.cmm
     if os(windows)
       c-sources:       src/Foreign/SharedPtrWin32.c
     else
       c-sources:       src/Foreign/SharedPtrPosix.c
     if flag(dev)
-        ghc-options:   -O0
+        ghc-options:   -O0 -debug -dcmm-lint
         cpp-options:   -DINTERPROCESS_DEBUG
         cc-options:    -DINTERPROCESS_DEBUG
     else

@@ -237,8 +237,7 @@ int mvar_take(MVar *mvar, void *localDataPtr, StgStablePtr tso) {
   DWORD r;
   do {
     r = WaitForSingleObject(mvar->canTakeE, mvar->storePtr->maxWaitMs);
-    if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso))
-      return EINTR;
+    if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso)) return EINTR;
   } while (r == WAIT_TIMEOUT);
   if (r != WAIT_OBJECT_0) {
     INTERPROCESS_LOG_DEBUG(
@@ -273,8 +272,7 @@ int mvar_put(MVar *mvar, void *localDataPtr, StgStablePtr tso) {
   DWORD r;
   do {
     r = WaitForSingleObject(mvar->canPutE, mvar->storePtr->maxWaitMs);
-    if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso))
-      return EINTR;
+    if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso)) return EINTR;
   } while (r == WAIT_TIMEOUT);
   if (r != WAIT_OBJECT_0) {
     INTERPROCESS_LOG_DEBUG(
@@ -286,8 +284,7 @@ int mvar_put(MVar *mvar, void *localDataPtr, StgStablePtr tso) {
     // first check readers, and only then, maybe allow takers
     do {
       r = WaitForSingleObject(mvar->protectReaders, mvar->storePtr->maxWaitMs);
-      if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso))
-        return EINTR;
+      if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso)) return EINTR;
     } while (r == WAIT_TIMEOUT);
     assert(r == WAIT_OBJECT_0);
     int remRdrs = mvar->storePtr->pendingReaders;
@@ -333,8 +330,7 @@ int mvar_read(MVar *mvar, void *localDataPtr, StgStablePtr tso) {
   DWORD r;
   do {
     r = WaitForSingleObject(mvar->protectReaders, mvar->storePtr->maxWaitMs);
-    if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso))
-      return EINTR;
+    if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso)) return EINTR;
   } while (r == WAIT_TIMEOUT);
   assert(r == WAIT_OBJECT_0);
   mvar->storePtr->pendingReaders++;
@@ -342,18 +338,18 @@ int mvar_read(MVar *mvar, void *localDataPtr, StgStablePtr tso) {
   assert(r != 0);
   DWORD signaled;
   do {
-    signaled = WaitForMultipleObjects(2, (HANDLE *)mvar, FALSE,  mvar->storePtr->maxWaitMs);
-    if (signaled == WAIT_TIMEOUT && has_blocked_exceptions(tso))
-      return EINTR;
+    signaled = WaitForMultipleObjects(2, (HANDLE *)mvar, FALSE,
+                                      mvar->storePtr->maxWaitMs);
+    if (signaled == WAIT_TIMEOUT && has_blocked_exceptions(tso)) return EINTR;
   } while (signaled == WAIT_TIMEOUT);
   switch (signaled) {
     case WAIT_OBJECT_0:
     case WAIT_OBJECT_1:
       memcpy(localDataPtr, mvar->dataPtr, mvar->storePtr->dataSize);
       do {
-        r = WaitForSingleObject(mvar->protectReaders, mvar->storePtr->maxWaitMs);
-        if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso))
-          return EINTR;
+        r = WaitForSingleObject(mvar->protectReaders,
+                                mvar->storePtr->maxWaitMs);
+        if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso)) return EINTR;
       } while (r == WAIT_TIMEOUT);
       assert(r == WAIT_OBJECT_0);
       --(mvar->storePtr->pendingReaders);
@@ -397,8 +393,7 @@ int mvar_swap(MVar *mvar, void *inPtr, void *outPtr, StgStablePtr tso) {
   DWORD r;
   do {
     r = WaitForSingleObject(mvar->canTakeE, mvar->storePtr->maxWaitMs);
-    if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso))
-      return EINTR;
+    if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso)) return EINTR;
   } while (r == WAIT_TIMEOUT);
   if (r != WAIT_OBJECT_0) {
     INTERPROCESS_LOG_DEBUG(

@@ -1,4 +1,4 @@
-#include "SharedObjectName.h"
+#include "common.h"
 
 #include <limits.h>
 #include <stdlib.h>
@@ -43,4 +43,10 @@ void genSharedObjectName(char* const name) {
     name[i] = keytable[rands[j].rem];
     if (rands[j].quot == 0) k++;
   }
+}
+
+bool has_blocked_exceptions(StgStablePtr tso) {
+  return (typeof(END_TSO_QUEUE))(
+             ((StgTSO*)deRefStablePtr(tso))->blocked_exceptions) !=
+         END_TSO_QUEUE;
 }

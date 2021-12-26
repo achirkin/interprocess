@@ -15,13 +15,13 @@ category:            system
 build-type:          Simple
 extra-source-files:
     README.md
-    cbits/SharedObjectName.c
-    include/SharedObjectName.h
+    include/common.h
     include/SharedPtr.h
-    src/Control/Concurrent/Process/StoredMVar.c
     src/Control/Concurrent/Process/QSem.c
     src/Foreign/SharedPtrPosix.c
     src/Foreign/SharedPtrWin32.c
+    src/Control/Concurrent/Process/StoredMVarPosix.c
+    src/Control/Concurrent/Process/StoredMVarWin32.c
 
 flag examples
     description:
@@ -45,15 +45,16 @@ library
     default-language:  Haskell2010
     ghc-options:       -Wall
     include-dirs:      include
-    c-sources:         cbits/SharedObjectName.c
-                       src/Control/Concurrent/Process/StoredMVar.c
+    c-sources:         cbits/common.c
                        src/Control/Concurrent/Process/QSem.c
                        src/Foreign/SharedPtr.c
     cmm-sources:       src/Control/Concurrent/Process/StoredMVarPrim.cmm
     if os(windows)
       c-sources:       src/Foreign/SharedPtrWin32.c
+                       src/Control/Concurrent/Process/StoredMVarWin32.c
     else
       c-sources:       src/Foreign/SharedPtrPosix.c
+                       src/Control/Concurrent/Process/StoredMVarPosix.c
     if flag(dev)
         ghc-options:   -O0 -debug -dcmm-lint
         cpp-options:   -DINTERPROCESS_DEBUG

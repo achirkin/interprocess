@@ -18,8 +18,8 @@ import           System.IO.Unsafe
 import           Text.Read
 
 #define HS_IMPORT_CONSTANTS_ONLY
-#include "SharedObjectName.h"
 #include "MachDeps.h"
+#include "common.h"
 
 -- | Reference to a shared object; can be sent to other processes.
 newtype SOName a = SOName (ForeignPtr CChar)

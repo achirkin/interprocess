@@ -9,8 +9,8 @@ homepage:            https://github.com/achirkin/interprocess
 license:             BSD-3-Clause
 license-file:        LICENSE
 author:              Artem Chirkin
-maintainer:          chirkin@arch.ethz.ch
-copyright:           (c) 2018 Artem Chirkin
+maintainer:          achirkin@users.noreply.github.com
+copyright:           (c) 2018-2022 Artem Chirkin
 category:            system
 build-type:          Simple
 extra-source-files:

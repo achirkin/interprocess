@@ -10,6 +10,8 @@
 #include <time.h>
 #include <unistd.h>
 
+// NB: use robust mutexes https://man7.org/linux/man-pages/man3/pthread_mutexattr_setrobust.3.html
+
 typedef struct MVar MVar;
 
 MVar *mvar_new(size_t byteSize, int max_wait_ms);
@@ -27,26 +29,29 @@ int mvar_tryswap(MVar *mvar, void *inPtr, void *outPtr);
 int mvar_isempty(MVar *mvar);
 
 typedef struct MVarState {
-  pthread_mutex_t mvMut;
-  pthread_cond_t canPutC;
-  pthread_cond_t canTakeC;
   size_t dataSize;
-  pthread_mutexattr_t mvMAttr;
-  pthread_condattr_t condAttr;
-  int isFull;
-  int pendingReaders;
-  int totalUsers;
   /**
    * Maximum wait time in milliseconds.
    * This determines maximum possible delay the mvar operation cancels in
    * the event of an async exception thrown to the calling Haskell thread.
    */
   int maxWaitMs;
+  int pendingReaders;
+
+  // following is OS-specific
+
+  int isFull;
+  int totalUsers;
+  pthread_mutex_t mvMut;
+  pthread_cond_t canPutC;
+  pthread_cond_t canTakeC;
+  pthread_mutexattr_t mvMAttr;
+  pthread_condattr_t condAttr;
 } MVarState;
 
 typedef struct MVar {
   /**
-   * State is stored in the shared data area, accessed by all threads.
+   * State is stored in the shared data area, accessed by all processes.
    * It has a fixed size and kept at the beginning of a shared memory region.
    */
   MVarState *statePtr;

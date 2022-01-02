@@ -16,9 +16,9 @@
 #endif
 
 #ifdef INTERPROCESS_DEBUG
-#define INTERPROCESS_CHECK(op) assert(op)
+#define ASSERT_TRUE(op) assert(op)
 #else
-#define INTERPROCESS_CHECK(op) op
+#define ASSERT_TRUE(op) op
 #endif
 
 typedef struct MVar MVar;
@@ -171,10 +171,10 @@ static inline bool interpret_wait(const char *debug_name, MVar *mvar,
           secondary event to reduce the waiting time and the chance of
           deadlocks.
          */
-        INTERPROCESS_CHECK(ResetEvent(secondaryE));
+        ASSERT_TRUE(ResetEvent(secondaryE));
       }
       if (!primaryR) {
-        INTERPROCESS_CHECK(ReleaseMutex(mvar->guardM));
+        ASSERT_TRUE(ReleaseMutex(mvar->guardM));
       }
       return primaryR;
 
@@ -192,6 +192,55 @@ static inline bool interpret_wait(const char *debug_name, MVar *mvar,
       ReleaseMutex(mvar->guardM);
       return false;
   }
+}
+
+/** Copy the data from the mvar and switch the events. */
+static inline void load_data(MVar *mvar, void *ptr) {
+  /*
+    The order of set/reset event is important; it ensures that canTakeE and
+    canPutE are never both non-signalled to avoid deadlocks. If a process
+    crashes between SetEvent and ResetEvent, other processes can detect and fix
+    that. See the note in `interpret_wait` for more details.
+   */
+  memcpy(ptr, mvar->dataPtr, mvar->statePtr->dataSize);
+  ASSERT_TRUE(SetEvent(mvar->canPutE));
+  ASSERT_TRUE(ResetEvent(mvar->canTakeE));
+}
+
+/** Copy the data to the mvar and switch the events. */
+static inline void save_data(MVar *mvar, void *ptr) {
+  // See the note in `load_data`
+  memcpy(mvar->dataPtr, ptr, mvar->statePtr->dataSize);
+  ASSERT_TRUE(SetEvent(mvar->canTakeE));
+  ASSERT_TRUE(ResetEvent(mvar->canPutE));
+}
+
+/**
+ * @brief Call `WaitForMultipleObjects` interrupting on exceptions in a calling
+ * Haskell thread.
+ *
+ * This function calls `WaitForMultipleObjects` in a loop with a timeout defined
+ * at the mvar creation. After each iteration, it checks if there are any
+ * pending blocked exceptions in the calling Haskell thread. If that is the
+ * case, it sets the `LastError` to `EINTR` and returns `WAIT_FAILED`. You can
+ * view this function as `WaitForMultipleObjects` with the infinite timeout.
+ *
+ * @param mvar
+ * @param tso Stable pointer for the Haskell thread state object (StgTSO).
+ * @param handles Two waitable objects, one of which is a mutex.
+ * @return DWORD Return code of `WaitForMultipleObjects`.
+ */
+static inline DWORD wait_interruptible(MVar *mvar, StgStablePtr tso,
+                                       HANDLE *handles) {
+  DWORD r;
+  do {
+    r = WaitForMultipleObjects(2, handles, TRUE, mvar->statePtr->maxWaitMs);
+    if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso)) {
+      SetLastError(EINTR);
+      return WAIT_FAILED;
+    }
+  } while (r == WAIT_TIMEOUT);
+  return r;
 }
 
 // ensure 64 byte alignment (maximum possible we can think of, e.g. AVX512)
@@ -380,75 +429,50 @@ void mvar_destroy(MVar *mvar) {
 }
 
 int mvar_take(MVar *mvar, void *localDataPtr, StgStablePtr tso) {
-  DWORD r;
   int pr_prev = INT_MAX, pr_cur;
-another_attempt:
   do {
-    r = WaitForMultipleObjects(2, &(mvar->canTakeE), TRUE,
-                               mvar->statePtr->maxWaitMs);
-    if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso)) return EINTR;
-  } while (r == WAIT_TIMEOUT);
-
-  if (!interpret_wait("mvar_take", mvar, r, NULL, mvar->canPutE)) return 1;
-
-  pr_cur = get_pendingReaders(mvar);
-  if (pr_cur >= pr_prev) {
-    pr_cur == 0;
-    reset_pendingReaders(mvar);
-  }
-  pr_prev = pr_cur;
-  if (pr_cur == 0) {
-    memcpy(localDataPtr, mvar->dataPtr, mvar->statePtr->dataSize);
-    INTERPROCESS_CHECK(SetEvent(mvar->canPutE));
-    INTERPROCESS_CHECK(ResetEvent(mvar->canTakeE));
-    INTERPROCESS_CHECK(ReleaseMutex(mvar->guardM));
-    return 0;
-  } else {
-    INTERPROCESS_CHECK(ReleaseMutex(mvar->guardM));
-    goto another_attempt;
-  }
+    if (!interpret_wait("mvar_take", mvar,
+                        wait_interruptible(mvar, tso, &(mvar->canTakeE)), NULL,
+                        mvar->canPutE))
+      return 1;
+    pr_cur = get_pendingReaders(mvar);
+    if (pr_cur >= pr_prev) {
+      pr_cur == 0;
+      reset_pendingReaders(mvar);
+    }
+    pr_prev = pr_cur;
+    if (pr_cur == 0) load_data(mvar, localDataPtr);
+    ASSERT_TRUE(ReleaseMutex(mvar->guardM));
+  } while (pr_cur != 0);
+  return 0;
 }
 
 int mvar_trytake(MVar *mvar, void *localDataPtr) {
   int pr_prev = INT_MAX, pr_cur;
-another_attempt:
-  if (!interpret_wait("mvar_trytake", mvar,
-                      WaitForSingleObject(mvar->guardM, INFINITE),
-                      mvar->canTakeE, mvar->canPutE))
-    return 1;
-
-  pr_cur = get_pendingReaders(mvar);
-  if (pr_cur >= pr_prev) {
-    pr_cur == 0;
-    reset_pendingReaders(mvar);
-  }
-  pr_prev = pr_cur;
-  if (pr_cur == 0) {
-    memcpy(localDataPtr, mvar->dataPtr, mvar->statePtr->dataSize);
-    INTERPROCESS_CHECK(SetEvent(mvar->canPutE));
-    INTERPROCESS_CHECK(ResetEvent(mvar->canTakeE));
-    INTERPROCESS_CHECK(ReleaseMutex(mvar->guardM));
-    return 0;
-  } else {
-    INTERPROCESS_CHECK(ReleaseMutex(mvar->guardM));
-    goto another_attempt;
-  }
+  do {
+    if (!interpret_wait("mvar_trytake", mvar,
+                        WaitForSingleObject(mvar->guardM, INFINITE),
+                        mvar->canTakeE, mvar->canPutE))
+      return 1;
+    pr_cur = get_pendingReaders(mvar);
+    if (pr_cur >= pr_prev) {
+      pr_cur == 0;
+      reset_pendingReaders(mvar);
+    }
+    pr_prev = pr_cur;
+    if (pr_cur == 0) load_data(mvar, localDataPtr);
+    ASSERT_TRUE(ReleaseMutex(mvar->guardM));
+  } while (pr_cur != 0);
+  return 0;
 }
 
 int mvar_put(MVar *mvar, void *localDataPtr, StgStablePtr tso) {
-  DWORD r;
-  do {
-    r = WaitForMultipleObjects(2, &(mvar->guardM), TRUE,
-                               mvar->statePtr->maxWaitMs);
-    if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso)) return EINTR;
-  } while (r == WAIT_TIMEOUT);
-
-  if (!interpret_wait("mvar_put", mvar, r, NULL, mvar->canTakeE)) return 1;
-
-  memcpy(mvar->dataPtr, localDataPtr, mvar->statePtr->dataSize);
-  INTERPROCESS_CHECK(SetEvent(mvar->canTakeE));
-  INTERPROCESS_CHECK(ResetEvent(mvar->canPutE));
-  INTERPROCESS_CHECK(ReleaseMutex(mvar->guardM));
+  if (!interpret_wait("mvar_put", mvar,
+                      wait_interruptible(mvar, tso, &(mvar->guardM)), NULL,
+                      mvar->canTakeE))
+    return 1;
+  save_data(mvar, localDataPtr);
+  ASSERT_TRUE(ReleaseMutex(mvar->guardM));
   return 0;
 }
 
@@ -457,36 +481,24 @@ int mvar_tryput(MVar *mvar, void *localDataPtr) {
                       WaitForSingleObject(mvar->guardM, INFINITE),
                       mvar->canPutE, mvar->canTakeE))
     return 1;
-
-  memcpy(mvar->dataPtr, localDataPtr, mvar->statePtr->dataSize);
-  INTERPROCESS_CHECK(SetEvent(mvar->canTakeE));
-  INTERPROCESS_CHECK(ResetEvent(mvar->canPutE));
-  INTERPROCESS_CHECK(ReleaseMutex(mvar->guardM));
+  save_data(mvar, localDataPtr);
+  ASSERT_TRUE(ReleaseMutex(mvar->guardM));
   return 0;
 }
 
 int mvar_read(MVar *mvar, void *localDataPtr, StgStablePtr tso) {
-  DWORD r;
-  r = WaitForSingleObject(mvar->guardM, INFINITE);
+  DWORD r = WaitForSingleObject(mvar->guardM, INFINITE);
   if (r == WAIT_OBJECT_0 || r == WAIT_ABANDONED_0) {
     if (!is_signalled(mvar->canTakeE)) {
       inc_pendingReaders(mvar);
-      INTERPROCESS_CHECK(ReleaseMutex(mvar->guardM));
-      do {
-        r = WaitForMultipleObjects(2, &(mvar->canTakeE), TRUE,
-                                   mvar->statePtr->maxWaitMs);
-        if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso)) {
-          dec_pendingReaders(mvar);
-          return EINTR;
-        }
-      } while (r == WAIT_TIMEOUT);
+      ASSERT_TRUE(ReleaseMutex(mvar->guardM));
+      r = wait_interruptible(mvar, tso, &(mvar->canTakeE));
       dec_pendingReaders(mvar);
     }
   }
   if (!interpret_wait("mvar_read", mvar, r, NULL, mvar->canPutE)) return 1;
-
   memcpy(localDataPtr, mvar->dataPtr, mvar->statePtr->dataSize);
-  INTERPROCESS_CHECK(ReleaseMutex(mvar->guardM));
+  ASSERT_TRUE(ReleaseMutex(mvar->guardM));
   return 0;
 }
 
@@ -495,29 +507,19 @@ int mvar_tryread(MVar *mvar, void *localDataPtr) {
                       WaitForSingleObject(mvar->guardM, INFINITE),
                       mvar->canTakeE, mvar->canPutE))
     return 1;
-
   memcpy(localDataPtr, mvar->dataPtr, mvar->statePtr->dataSize);
-  INTERPROCESS_CHECK(ReleaseMutex(mvar->guardM));
+  ASSERT_TRUE(ReleaseMutex(mvar->guardM));
   return 0;
 }
 
 int mvar_swap(MVar *mvar, void *inPtr, void *outPtr, StgStablePtr tso) {
-  DWORD r;
-  do {
-    r = WaitForMultipleObjects(2, &(mvar->canTakeE), TRUE,
-                               mvar->statePtr->maxWaitMs);
-    if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso)) return EINTR;
-  } while (r == WAIT_TIMEOUT);
-
-  if (!interpret_wait("mvar_swap", mvar, r, NULL, mvar->canPutE)) return 1;
-
-  memcpy(outPtr, mvar->dataPtr, mvar->statePtr->dataSize);
-  INTERPROCESS_CHECK(SetEvent(mvar->canPutE));
-  INTERPROCESS_CHECK(ResetEvent(mvar->canTakeE));
-  memcpy(mvar->dataPtr, inPtr, mvar->statePtr->dataSize);
-  INTERPROCESS_CHECK(SetEvent(mvar->canTakeE));
-  INTERPROCESS_CHECK(ResetEvent(mvar->canPutE));
-  INTERPROCESS_CHECK(ReleaseMutex(mvar->guardM));
+  if (!interpret_wait("mvar_swap", mvar,
+                      wait_interruptible(mvar, tso, &(mvar->canTakeE)), NULL,
+                      mvar->canPutE))
+    return 1;
+  load_data(mvar, outPtr);
+  save_data(mvar, inPtr);
+  ASSERT_TRUE(ReleaseMutex(mvar->guardM));
   return 0;
 }
 
@@ -526,14 +528,9 @@ int mvar_tryswap(MVar *mvar, void *inPtr, void *outPtr) {
                       WaitForSingleObject(mvar->guardM, INFINITE),
                       mvar->canTakeE, mvar->canPutE))
     return 1;
-
-  memcpy(outPtr, mvar->dataPtr, mvar->statePtr->dataSize);
-  INTERPROCESS_CHECK(SetEvent(mvar->canPutE));
-  INTERPROCESS_CHECK(ResetEvent(mvar->canTakeE));
-  memcpy(mvar->dataPtr, inPtr, mvar->statePtr->dataSize);
-  INTERPROCESS_CHECK(SetEvent(mvar->canTakeE));
-  INTERPROCESS_CHECK(ResetEvent(mvar->canPutE));
-  INTERPROCESS_CHECK(ReleaseMutex(mvar->guardM));
+  load_data(mvar, outPtr);
+  save_data(mvar, inPtr);
+  ASSERT_TRUE(ReleaseMutex(mvar->guardM));
   return 0;
 }
 

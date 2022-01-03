@@ -1,4 +1,3 @@
-#include "common.h"
 #include "SharedPtr.h"
 
 void _SharedMutex_init(SharedMutex *mptr, void **privateMutexHandle,

@@ -1,6 +1,5 @@
 #include <common.h>
 
-#include <stdlib.h>
 
 typedef struct QSem QSem;
 

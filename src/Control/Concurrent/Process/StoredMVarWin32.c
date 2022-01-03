@@ -4,7 +4,6 @@
 #include <errno.h>
 #include <limits.h>
 #include <stdatomic.h>
-#include <stdlib.h>
 #include <windows.h>
 
 #ifndef WAIT_OBJECT_1

@@ -1,11 +1,8 @@
 #ifndef __HSSHAREDPTR_H__
 #define __HSSHAREDPTR_H__
+#include "common.h"
 
 #include <stddef.h>
-
-#include "HsFFI.h"
-#include "MachDeps.h"
-#include "common.h"
 
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32) || \
     defined(mingw32_HOST_OS)

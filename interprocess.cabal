@@ -109,5 +109,7 @@ test-suite StoredMVar
                        , typed-process >= 0.2.5
                        , async
                        , containers
+                       , bytestring
+                       , stm
                        , interprocess
     ghc-options:         -threaded -Wall

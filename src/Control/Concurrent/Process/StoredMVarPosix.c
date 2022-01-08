@@ -4,12 +4,20 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
 
-// NB: use robust mutexes https://man7.org/linux/man-pages/man3/pthread_mutexattr_setrobust.3.html
+#ifdef INTERPROCESS_DEBUG
+#define ASSERT_ZERO(op) assert(op == 0)
+#else
+#define ASSERT_ZERO(op) op
+#endif
+
+// NB: use robust mutexes
+// https://man7.org/linux/man-pages/man3/pthread_mutexattr_setrobust.3.html
 
 typedef struct MVar MVar;
 
@@ -40,12 +48,10 @@ typedef struct MVarState {
   // following is OS-specific
 
   int isFull;
-  int totalUsers;
+  atomic_int totalUsers;
   pthread_mutex_t mvMut;
   pthread_cond_t canPutC;
   pthread_cond_t canTakeC;
-  pthread_mutexattr_t mvMAttr;
-  pthread_condattr_t condAttr;
 } MVarState;
 
 typedef struct MVar {
@@ -66,13 +72,26 @@ size_t mvar_state_size64() {
   return (x + 63) & (~63);
 }
 
+/**
+ * Increase the total users counter by one and return zero;
+ * if there are no users left (counter == 0), fail (return non-zero).
+ */
+static inline int inc_totalUsers(MVar *mvar) {
+  atomic_int *p = &(mvar->statePtr->totalUsers);
+  int exp = atomic_load_explicit(p, memory_order_relaxed);
+  while (exp >= 1) {
+    if (atomic_compare_exchange_weak_explicit(
+            p, &exp, exp + 1, memory_order_relaxed, memory_order_relaxed))
+      return 0;
+  }
+  return -1;
+}
+
 MVar *mvar_new(size_t byteSize, int max_wait_ms) {
   int r = 0;
   // allocate MVar
   MVar *mvar = malloc(sizeof(MVar));
-  if (mvar == NULL) {
-    return NULL;
-  }
+  if (mvar == NULL) goto failed;
   genSharedObjectName(mvar->mvarName);
 
   // allocate shared memory for MVarState and data
@@ -80,21 +99,21 @@ MVar *mvar_new(size_t byteSize, int max_wait_ms) {
   size_t totalSize = dataShift + byteSize;
   int memFd = shm_open(mvar->mvarName, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
   if (memFd < 0) {
-    free(mvar);
-    return NULL;
+    INTERPROCESS_LOG_DEBUG("Could not open shared memory segment (%d).\n",
+                           errno);
+    goto failed_after_mvar_allocated;
   }
-  r = ftruncate(memFd, totalSize);
-  if (r != 0) {
-    shm_unlink(mvar->mvarName);
-    free(mvar);
-    return NULL;
+
+  if (ftruncate(memFd, totalSize) != 0) {
+    INTERPROCESS_LOG_DEBUG(
+        "Could not allocate shared memory (ftruncate) (%d).\n", errno);
+    goto failed_after_shmem_open;
   }
   mvar->statePtr = (MVarState *)mmap(NULL, totalSize, PROT_READ | PROT_WRITE,
                                      MAP_SHARED, memFd, 0);
   if (mvar->statePtr == MAP_FAILED) {
-    shm_unlink(mvar->mvarName);
-    free(mvar);
-    return NULL;
+    INTERPROCESS_LOG_DEBUG("Could not map shared memory (mmap) (%d).\n", errno);
+    goto failed_after_shmem_open;
   }
   mvar->dataPtr = ((void *)(mvar->statePtr)) + dataShift;
 
@@ -106,87 +125,108 @@ MVar *mvar_new(size_t byteSize, int max_wait_ms) {
                                          .maxWaitMs = max_wait_ms};
 
   // init mutex and condition variables
-  r = pthread_mutexattr_init(&(mvar->statePtr->mvMAttr));
+  pthread_mutexattr_t mvMAttr;
+  r = pthread_mutexattr_init(&mvMAttr);
+  if (r != 0) goto failed_on_mutex_init;
 #ifdef INTERPROCESS_DEBUG
-  if (r == 0)
-    r = pthread_mutexattr_settype(&(mvar->statePtr->mvMAttr),
-                                  PTHREAD_MUTEX_ERRORCHECK);
+  r = pthread_mutexattr_settype(&mvMAttr, PTHREAD_MUTEX_ERRORCHECK);
+  if (r != 0) goto failed_on_mutex_init;
 #endif
-  if (r == 0)
-    r = pthread_mutexattr_setpshared(&(mvar->statePtr->mvMAttr),
-                                     PTHREAD_PROCESS_SHARED);
-  if (r == 0)
-    r = pthread_mutex_init(&(mvar->statePtr->mvMut),
-                           &(mvar->statePtr->mvMAttr));
-  if (r == 0) r = pthread_condattr_init(&(mvar->statePtr->condAttr));
-  if (r == 0)
-    r = pthread_condattr_setpshared(&(mvar->statePtr->condAttr),
-                                    PTHREAD_PROCESS_SHARED);
-  if (r == 0)
-    r = pthread_cond_init(&(mvar->statePtr->canPutC),
-                          &(mvar->statePtr->condAttr));
-  if (r == 0)
-    r = pthread_cond_init(&(mvar->statePtr->canTakeC),
-                          &(mvar->statePtr->condAttr));
+  r = pthread_mutexattr_setpshared(&mvMAttr, PTHREAD_PROCESS_SHARED);
+  if (r != 0) goto failed_on_mutex_init;
+  r = pthread_mutex_init(&(mvar->statePtr->mvMut), &mvMAttr);
+  if (r != 0) goto failed_on_mutex_init;
+  r = pthread_mutexattr_destroy(&mvMAttr);
   if (r != 0) {
-    munmap(mvar->statePtr, totalSize);
-    shm_unlink(mvar->mvarName);
-    free(mvar);
-    return NULL;
+  failed_on_mutex_init:
+    INTERPROCESS_LOG_DEBUG("Could not init a mutex (%d).\n", r);
+    goto failed_after_mmap;
+  }
+
+  pthread_condattr_t condAttr;
+  r = pthread_condattr_init(&condAttr);
+  if (r != 0) goto failed_on_cond_init;
+  r = pthread_condattr_setpshared(&condAttr, PTHREAD_PROCESS_SHARED);
+  if (r != 0) goto failed_on_cond_init;
+  r = pthread_cond_init(&(mvar->statePtr->canPutC), &condAttr);
+  if (r != 0) goto failed_on_cond_init;
+  r = pthread_cond_init(&(mvar->statePtr->canTakeC), &condAttr);
+  if (r != 0) goto failed_on_cond_init;
+  pthread_condattr_destroy(&condAttr);
+  if (r != 0) {
+  failed_on_cond_init:
+    INTERPROCESS_LOG_DEBUG("Could not init a condition variable (%d).\n", r);
+    goto failed_after_mmap;
   }
 
   return mvar;
+
+failed_after_mmap:
+  munmap(mvar->statePtr, totalSize);
+failed_after_shmem_open:
+  shm_unlink(mvar->mvarName);
+failed_after_mvar_allocated:
+  free(mvar);
+failed:
+  return NULL;
 }
 
 MVar *mvar_lookup(const char *name) {
+  // allocate MVar
+  MVar *mvar = malloc(sizeof(MVar));
+  if (mvar == NULL) goto failed;
+  strcpy(mvar->mvarName, name);
+
   int memFd = shm_open(name, O_RDWR, S_IRUSR | S_IWUSR);
-  if (memFd < 0) return NULL;
+  if (memFd < 0) {
+    INTERPROCESS_LOG_DEBUG("Could not open shared memory segment (%d).\n",
+                           errno);
+    goto failed_after_mvar_allocated;
+  }
 
   // first, map only sizeof(MVarState) bytes
   // then, read the actual size and remap memory
-  void *mvs0 = mmap(NULL, sizeof(MVarState), PROT_READ, MAP_SHARED, memFd, 0);
-  if (mvs0 == MAP_FAILED) return NULL;
-  size_t dataShift = mvar_state_size64(),
-         storeSize = dataShift + ((MVarState *)mvs0)->dataSize;
-  munmap(mvs0, sizeof(MVarState));  // don't really care if it is failed
-  MVarState *mvs = (MVarState *)mmap(NULL, storeSize, PROT_READ | PROT_WRITE,
+  mvar->statePtr = (MVarState *)mmap(NULL, sizeof(MVarState), PROT_READ,
                                      MAP_SHARED, memFd, 0);
-  if (mvs == MAP_FAILED) return NULL;
-  // setup MVar struct
-  MVar *mvar = malloc(sizeof(MVar));
-  if (mvar == NULL) {
-    munmap(mvs, storeSize);
-    return NULL;
+  if (mvar->statePtr == MAP_FAILED) {
+    INTERPROCESS_LOG_DEBUG("Could not map shared memory (mmap) (%d).\n", errno);
+    goto failed_after_mvar_allocated;
   }
-  mvar->statePtr = (MVarState *)mvs;
+  size_t dataShift = mvar_state_size64();
+  size_t totalSize = dataShift + mvar->statePtr->dataSize;
+  ASSERT_ZERO(munmap(mvar->statePtr, sizeof(MVarState)));
+
+  // now we know the actual size, map the memory again
+  mvar->statePtr = (MVarState *)mmap(NULL, totalSize, PROT_READ | PROT_WRITE,
+                                     MAP_SHARED, memFd, 0);
+  if (mvar->statePtr == MAP_FAILED) {
+    INTERPROCESS_LOG_DEBUG("Could not map shared memory (mmap) (%d).\n", errno);
+    goto failed_after_mvar_allocated;
+  }
   mvar->dataPtr = ((void *)(mvar->statePtr)) + dataShift;
-  strcpy(mvar->mvarName, name);
 
   // update state
-  int r = 0;
-  r = pthread_mutex_lock(&(mvar->statePtr->mvMut));
-  if (r != 0 || mvar->statePtr->totalUsers == 0) {
-    munmap(mvar->statePtr, storeSize);
-    free(mvar);
-    return NULL;
+  if (inc_totalUsers(mvar) != 0) {
+    INTERPROCESS_LOG_DEBUG(
+        "Found that the mvar was already destroyed when updating the total "
+        "users counter.\n");
+    goto failed_after_mmap;
   }
-  mvar->statePtr->totalUsers++;
-  r = pthread_mutex_unlock(&(mvar->statePtr->mvMut));
-  if (r != 0) {
-    munmap(mvar->statePtr, storeSize);
-    free(mvar);
-    return NULL;
-  }
-
   return mvar;
+
+failed_after_mmap:
+  munmap(mvar->statePtr, totalSize);
+failed_after_mvar_allocated:
+  free(mvar);
+failed:
+  return NULL;
 }
 
 void mvar_destroy(MVar *mvar) {
-  int usersLeft;
   size_t storeSize = mvar->statePtr->dataSize + mvar_state_size64();
-  pthread_mutex_lock(&(mvar->statePtr->mvMut));
-  usersLeft = --(mvar->statePtr->totalUsers);
-  pthread_mutex_unlock(&(mvar->statePtr->mvMut));
+  int usersLeft = atomic_fetch_sub_explicit(&(mvar->statePtr->totalUsers), 1,
+                                            memory_order_relaxed) -
+                  1;
   if (usersLeft > 0) {
     INTERPROCESS_LOG_DEBUG(
         "Destroying local instance of mvar %s, %d users left.\n",
@@ -197,9 +237,7 @@ void mvar_destroy(MVar *mvar) {
         "Destroying mvar %s globally (no other users left).\n", mvar->mvarName);
     pthread_cond_destroy(&(mvar->statePtr->canTakeC));
     pthread_cond_destroy(&(mvar->statePtr->canPutC));
-    pthread_condattr_destroy(&(mvar->statePtr->condAttr));
     pthread_mutex_destroy(&(mvar->statePtr->mvMut));
-    pthread_mutexattr_destroy(&(mvar->statePtr->mvMAttr));
     munmap(mvar->statePtr, storeSize);
     shm_unlink(mvar->mvarName);
   }

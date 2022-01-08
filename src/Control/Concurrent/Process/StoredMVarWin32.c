@@ -273,7 +273,7 @@ MVar *mvar_new(size_t byteSize, int max_wait_ms) {
   if (mvar->dataStoreFM == NULL) {
     INTERPROCESS_LOG_DEBUG("Could not create file mapping object (%d).\n",
                            GetLastError());
-    goto failed_after_mvar_created;
+    goto failed_after_mvar_allocated;
   }
   mvar->statePtr = (MVarState *)MapViewOfFile(
       /* handle to map object */
@@ -326,7 +326,7 @@ failed_after_fm_mapped:
   UnmapViewOfFile(mvar->statePtr);
 failed_after_fm_created:
   CloseHandle(mvar->dataStoreFM);
-failed_after_mvar_created:
+failed_after_mvar_allocated:
   free(mvar);
 failed:
   return NULL;
@@ -344,7 +344,7 @@ MVar *mvar_lookup(const char *name) {
   if (mvar->dataStoreFM == NULL) {
     INTERPROCESS_LOG_DEBUG("Could not open file mapping object (%d).\n",
                            GetLastError());
-    goto failed_after_mvar_created;
+    goto failed_after_mvar_allocated;
   }
 
   size_t dataShift = mvar_state_size64();
@@ -412,7 +412,7 @@ failed_after_fm_mapped:
   UnmapViewOfFile(mvar->statePtr);
 failed_after_fm_created:
   CloseHandle(mvar->dataStoreFM);
-failed_after_mvar_created:
+failed_after_mvar_allocated:
   free(mvar);
 failed:
   return NULL;

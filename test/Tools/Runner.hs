@@ -8,6 +8,8 @@ import qualified Control.Concurrent.Chan               as Chan
 import           Control.Concurrent.Process.StoredMVar
 import           Control.Exception                     (catch)
 import           Control.Monad                         (forever)
+import           Control.Monad.STM                     (atomically)
+import           Data.ByteString.Lazy.Char8            (unpack)
 import           Data.Foldable                         (fold)
 import qualified Data.List                             as List
 import qualified Data.Map                              as Map
@@ -21,7 +23,7 @@ import           System.Mem                            (performGC)
 import           System.Process.Typed
 import           Text.Read                             (readMaybe)
 
-import           Tools.TestResult
+import Tools.TestResult
 
 {- |
   Specification of a single test.
@@ -101,25 +103,27 @@ runSpec f (TestSpec name (roles :: [(k, k -> StoredMVar ctx -> IO TestResult)]))
       -- Maybe Int -> ((String, String), Maybe Int)
       maybe ((show k, show k), Nothing) (\i -> ((show k ++ "-" ++ show i, show k), Just (pred i)))
       ) (show k) m ) roleCount roles
-    
+
     withLabel label s = "  [" ++ label ++ "] " ++ s
 
     printChildLine (label, s) = putStrLn $ withLabel label s
-    
+
     channelHandle sink i handle = forever
       (hGetLine handle >>= \s -> Chan.writeChan sink (i, s))
         `catch` (const mempty :: IOError -> IO ())
 
-    mkConf x = setStdout createPipe $
-      setStderr createPipe $ proc f x
+    mkConf x
+      = setStdout createPipe
+      $ setStderr byteStringOutput
+      $ proc f x
 
     go stdSink label x = Concurrently $ withProcessWait (mkConf x) $ \p ->
-      withAsync (channelHandle stdSink label (getStdout p)) $ \sink -> do
+        withAsync (channelHandle stdSink label (getStdout p)) $ \sink -> do
           ecode <- waitExitCode p
           r <- case ecode of
-            ExitSuccess   -> return Success
+            ExitSuccess   -> pure Success
             ExitFailure _ -> do
-              errs <- hGetContents (getStderr p)
-              return $ Failure (unlines . map (withLabel label) $ lines errs)
+              errs <- atomically (getStderr p)
+              return $ Failure (unlines . map (withLabel label) $ lines $ unpack errs)
           wait sink
           return r

@@ -1,6 +1,6 @@
 cabal-version:       3.0
 name:                interprocess
-version:             0.2.1.0
+version:             0.2.2.0
 synopsis:            Shared memory and control structures for IPC
 description:         Provides portable shared memory allocator and some synchronization primitives.
                      Can be used for interprocess communication.
@@ -101,12 +101,14 @@ executable wait-mvar
 test-suite StoredMVar
     type:                exitcode-stdio-1.0
     main-is:             StoredMVar.hs
-    other-modules:       Tools.TestResult
+    other-modules:       Tools.Handle
+                         Tools.TestResult
                          Tools.Runner
     default-language:    Haskell2010
     hs-source-dirs:      test
     build-depends:       base >= 4.11
                        , typed-process >= 0.2.5
+                       , process >= 1.2.1.0
                        , async
                        , containers
                        , bytestring

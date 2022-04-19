@@ -1,11 +1,11 @@
 {-# LANGUAGE TupleSections #-}
 module Main (main) where
 
-import           Control.Concurrent                    (threadDelay)
-import           Control.Concurrent.Async
-import           Control.Concurrent.Process.StoredMVar
-import           Tools.Runner
-import           Tools.TestResult
+import Control.Concurrent                    (threadDelay)
+import Control.Concurrent.Async
+import Control.Concurrent.Process.StoredMVar
+import Tools.Runner
+import Tools.TestResult
 
 data BasicRole = Master | Slave
   deriving (Eq, Ord, Show, Read)
@@ -14,7 +14,7 @@ data ThreeWayRole = Reader | Taker | Putter
   deriving (Eq, Ord, Show, Read)
 
 simpleTakePut :: TestSpec
-simpleTakePut = TestSpec "SimpleTakePut"
+simpleTakePut = Repeat 100 $ TestSpec "SimpleTakePut"
   [ (Master, run)
   , (Slave, run)
   ]
@@ -34,7 +34,7 @@ simpleTakePut = TestSpec "SimpleTakePut"
 
 
 readersTakers :: TestSpec
-readersTakers = TestSpec "ReadersTakers" $
+readersTakers = Repeat 100 $ TestSpec "ReadersTakers" $
     (, run) <$> (replicate 20 Reader <> [Taker, Putter])
   where
     run :: ThreeWayRole -> StoredMVar Int -> IO TestResult
@@ -68,7 +68,7 @@ readersTakers = TestSpec "ReadersTakers" $
 
 
 asyncException :: TestSpec
-asyncException = TestSpec "AsyncException" [((), run)]
+asyncException = Repeat 10 $ TestSpec "AsyncException" [((), run)]
   where
     run :: () -> StoredMVar Int -> IO TestResult
     run _ mvar = do

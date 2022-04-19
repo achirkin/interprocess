@@ -3,11 +3,12 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 module Tools.Runner (runTests, TestSpec (..)) where
 
+import           Control.Concurrent                    (threadDelay)
 import           Control.Concurrent.Async
 import qualified Control.Concurrent.Chan               as Chan
 import           Control.Concurrent.Process.StoredMVar
 import           Control.Exception                     (catch)
-import           Control.Monad                         (forever)
+import           Control.Monad                         (foldM, forever)
 import           Control.Monad.STM                     (atomically)
 import           Data.ByteString.Lazy.Char8            (unpack)
 import           Data.Foldable                         (fold)
@@ -19,10 +20,11 @@ import           System.Environment                    (getArgs,
                                                         getExecutablePath)
 import           System.Exit
 import           System.IO
-import           System.Mem                            (performGC)
+import           System.Mem                            (performMajorGC)
 import           System.Process.Typed
 import           Text.Read                             (readMaybe)
 
+import Tools.Handle
 import Tools.TestResult
 
 {- |
@@ -38,10 +40,33 @@ data TestSpec where
   TestSpec :: forall k ctx
             . (Show k, Read k, Eq k, Storable ctx)
            => String -> [(k, k -> StoredMVar ctx -> IO TestResult)] -> TestSpec
+  -- | Set the maximum time the test can take in milliseconds.
+  --   The test process will be forcefully terminated after the time limit elapses.
+  WithTimeLimit :: Int -> TestSpec -> TestSpec
+  -- | Repeat the test the specified number of times.
+  Repeat :: Int -> TestSpec -> TestSpec
 
 -- | Get the name of the test.
 testName :: TestSpec -> String
-testName (TestSpec name _) = name
+testName (TestSpec name _)   = name
+testName (WithTimeLimit _ s) = testName s
+testName (Repeat _ s)        = testName s
+
+stripSpec :: TestSpec -> TestSpec
+stripSpec (WithTimeLimit _ s) = stripSpec s
+stripSpec (Repeat _ s)        = stripSpec s
+stripSpec s                   = s
+
+data SpecParams = SpecParams
+  { exec    :: String -- ^ Executable name
+  , timeout :: Int -- ^ Terminate process after this amount of milliseconds
+  }
+
+defaultSpecParams :: String -> SpecParams
+defaultSpecParams execFile = SpecParams
+  { exec = execFile
+  , timeout = 1000
+  }
 
 -- | Run all tests in the list. Use it as the `main`:
 --
@@ -56,7 +81,7 @@ runTests specs = do
   case args of
     -- run all tests
     [] -> do
-        results <- mapM (runSpec execFile) specs
+        results <- mapM (runSpec $ defaultSpecParams execFile) specs
         case fold results of
             Success   -> exitSuccess
             Failure _ -> exitFailure
@@ -66,7 +91,7 @@ runTests specs = do
         hSetBuffering stdout LineBuffering
         TestSpec _ roles <- case List.find ((== n) . testName) specs of
             Nothing   -> fail $ "Unknown test name: " ++ show n
-            Just spec -> pure spec
+            Just spec -> pure $ stripSpec spec
         k <- case readMaybe sk of
             Nothing -> fail $ "Couldn't read the role " ++ show sk
             Just x  -> pure x
@@ -81,15 +106,34 @@ runTests specs = do
     _ -> fail $ "Expected zero or three arguments, got " ++ show args
 
 
-runSpec :: FilePath -> TestSpec -> IO TestResult
-runSpec f (TestSpec name (roles :: [(k, k -> StoredMVar ctx -> IO TestResult)])) = do
+runSpec :: SpecParams -> TestSpec -> IO TestResult
+runSpec pams (WithTimeLimit t s) = runSpec (pams {timeout = t}) s
+runSpec pams (Repeat n s) = do
+    putStrLn $ "[" ++ testName s ++ "] Running " ++ show n ++ " times..."
+    r <- foldM go Success [1..n]
+    putStrLn $ "[" ++ testName s ++ "] Result: " ++ displayResult r
+    return r
+  where
+    go Success i = do
+      (out, r) <- redirectHandle stdout $ do
+        r <- runSpec pams s
+        r `seq` performMajorGC
+        return r
+      case r of
+        Success -> pure ()
+        _ -> do
+          putStrLn $ "[" ++ testName s ++ "] Failed on test iteration " ++ show i
+          putStrLn out
+      return r
+    go failure _ = pure failure
+runSpec pams (TestSpec name (roles :: [(k, k -> StoredMVar ctx -> IO TestResult)])) = do
     putStrLn $ "[" ++ name ++ "] Running..."
     childIns <- Chan.newChan
     comms <- newEmptyMVar :: IO (StoredMVar ctx)
     let k = show $ mVarName comms
     r <- withAsync (forever $ Chan.readChan childIns >>= printChildLine) $ \_ -> do
         r <- runConcurrently $ foldMap (\(l, r) -> go childIns l [name, r, k]) labelsroles
-        r `seq` comms `seq` performGC
+        r `seq` comms `seq` performMajorGC
         return r
     putStrLn $ "[" ++ name ++ "] Result: " ++ displayResult r
     return r
@@ -115,9 +159,16 @@ runSpec f (TestSpec name (roles :: [(k, k -> StoredMVar ctx -> IO TestResult)]))
     mkConf x
       = setStdout createPipe
       $ setStderr byteStringOutput
-      $ proc f x
+      $ proc (exec pams) x
 
-    go stdSink label x = Concurrently $ withProcessWait (mkConf x) $ \p ->
+    checkTimeout label (Left ()) = Failure $ withLabel label $
+      "the process did not finish in " ++ show (timeout pams) ++ " milliseconds"
+    checkTimeout _ (Right r) = r
+
+    go stdSink label x = Concurrently
+      $ fmap (checkTimeout label)
+      $ withProcessWait (mkConf x) $ \p ->
+        race (threadDelay $ 1000 * timeout pams) $
         withAsync (channelHandle stdSink label (getStdout p)) $ \sink -> do
           ecode <- waitExitCode p
           r <- case ecode of

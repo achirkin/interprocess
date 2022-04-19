@@ -257,15 +257,15 @@ static inline void finilize_USE_MUTEX(pthread_mutex_t **mp) {
   __attribute__((cleanup(finilize_USE_MUTEX))) pthread_mutex_t *_mut = \
       &(state->mvMut);
 
-#define WAIT_A_BIT(cond, mut, ms)                             \
-  {                                                           \
-    struct timespec time_to_wait;                             \
-    clock_gettime(CLOCK_REALTIME, &time_to_wait);             \
-    div_t t = div(ms, 1000);                                  \
-    time_to_wait.tv_sec += t.quot;                            \
-    time_to_wait.tv_nsec += ((long)(t.rem)) * 1000000;        \
-    int r = pthread_cond_timedwait(cond, mut, &time_to_wait); \
-    if (r != 0 && r != ETIMEDOUT) return r;                   \
+#define WAIT_A_BIT(cond, mut, ms)                                        \
+  {                                                                      \
+    struct timespec time_to_wait;                                        \
+    clock_gettime(CLOCK_REALTIME, &time_to_wait);                        \
+    ldiv_t t = ldiv(ms * 1000 + (time_to_wait.tv_nsec / 1000), 1000000); \
+    time_to_wait.tv_sec += t.quot;                                       \
+    time_to_wait.tv_nsec = t.rem * 1000;                                 \
+    int r = pthread_cond_timedwait(cond, mut, &time_to_wait);            \
+    if (r != 0 && r != ETIMEDOUT) return r;                              \
   }
 
 int mvar_take(MVar *mvar, void *localDataPtr, StgStablePtr tso) {

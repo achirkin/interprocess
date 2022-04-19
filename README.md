@@ -1,6 +1,6 @@
 # interprocess
 [![Hackage](https://img.shields.io/hackage/v/interprocess.svg)](https://hackage.haskell.org/package/interprocess)
-[![Build Status](https://github.com/achirkin/interprocess/actions/workflows/build.yml/badge.svg)](https://github.com/achirkin/interprocess/actions/workflows/build.yml)
+[![Haskell CI](https://github.com/achirkin/interprocess/actions/workflows/build.yml/badge.svg)](https://github.com/achirkin/interprocess/actions/workflows/build.yml)
 
 Platform-independent interprocess communication.
 

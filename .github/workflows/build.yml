@@ -36,7 +36,7 @@ jobs:
         run: cabal v2-build --enable-tests --enable-benchmarks
 
       - name: Run tests
-        continue-on-error: ${{ runner.os != 'Linux' }}
+        continue-on-error: ${{ runner.os == 'macOS' }}
         run: cabal v2-test
 
       - name: Build samples

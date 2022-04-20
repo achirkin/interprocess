@@ -5,7 +5,7 @@ module Tools.Handle
 import Control.Exception       (bracket)
 import GHC.IO.Handle           (hDuplicate, hDuplicateTo)
 import GHC.IO.Handle.Internals (withHandle_)
-import GHC.IO.Handle.Types     (Handle__ (haInputNL, haOutputNL))
+import GHC.IO.Handle.Types     ( Handle(FileHandle, DuplexHandle), Handle__(haInputNL, haOutputNL) )
 import System.IO
 import System.Process          (createPipe)
 
@@ -28,10 +28,15 @@ usingReadEnd origHandle action = withCompatiblePipe origHandle $ \(readEnd, writ
   where
     redirect writeEnd = do
       origDup <- hDuplicate origHandle
-      hDuplicateTo writeEnd origHandle
+      hDuplicateWriteEndTo writeEnd origHandle
       return origDup
 
     unredirect origDup = hDuplicateTo origDup origHandle
+
+hDuplicateWriteEndTo :: Handle -> Handle -> IO ()
+hDuplicateWriteEndTo h1@FileHandle{} (DuplexHandle p _ w) = hDuplicateTo h1 (FileHandle p w)
+hDuplicateWriteEndTo (DuplexHandle p _ w) h2@FileHandle{} = hDuplicateTo (FileHandle p w) h2
+hDuplicateWriteEndTo h1 h2 = hDuplicateTo h1 h2
 
 withCompatiblePipe :: Handle -> ((Handle, Handle) -> IO a) -> IO a
 withCompatiblePipe origHandle action = do

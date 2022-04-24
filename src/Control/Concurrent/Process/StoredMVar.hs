@@ -48,7 +48,8 @@ import Foreign.Storable
 import System.Environment                (lookupEnv)
 import Text.Read                         (readMaybe)
 
-import GHC.Exts (Addr#, Int (..), Int#, RealWorld, State#)
+import GHC.Exts (Addr#, Int#, RealWorld, State#)
+import GHC.Int  (Int32(I32#)) 
 import GHC.IO   (IO (..))
 import GHC.Ptr  (Ptr (..))
 
@@ -123,10 +124,8 @@ isEmptyMVar (StoredMVar _ fp) = withForeignPtr fp $ fmap (0 /=) . c'mvar_isempty
 --
 takeMVar :: Storable a => StoredMVar a -> IO a
 takeMVar (StoredMVar _ fp) = mask_ $ withForeignPtr fp $ \p -> alloca $ \lp -> do
-    r <- cmmOp (cmm'mvar_take (unptr p) (unptr lp))
-    if r == 0
-    then peek lp
-    else throwErrno $ "takeMVar failed with code " ++ show r
+    checkErrorCode "takeMVar" $ cmmOp (cmm'mvar_take (unptr p) (unptr lp))
+    peek lp
 {-# INLINE takeMVar #-}
 
 
@@ -139,10 +138,8 @@ takeMVar (StoredMVar _ fp) = mask_ $ withForeignPtr fp $ \p -> alloca $ \lp -> d
 --
 readMVar :: Storable a => StoredMVar a -> IO a
 readMVar (StoredMVar _ fp) = mask_ $ withForeignPtr fp $ \p -> alloca $ \lp -> do
-    r <- cmmOp (cmm'mvar_read (unptr p) (unptr lp))
-    if r == 0
-    then peek lp
-    else throwErrno $ "readMVar failed with code " ++ show r
+    checkErrorCode "readMVar" $ cmmOp (cmm'mvar_read (unptr p) (unptr lp))
+    peek lp
 {-# INLINE readMVar #-}
 
 
@@ -153,10 +150,8 @@ swapMVar (StoredMVar _ fp) x
   = mask_ $ withForeignPtr fp $ \p -> allocaArray 2 $ \inp -> do
     let outp = advancePtr inp 1
     poke inp x
-    r <- cmmOp (cmm'mvar_swap (unptr p) (unptr inp) (unptr outp))
-    if r == 0
-    then peek outp
-    else throwErrno $ "swapMVar failed with code " ++ show r
+    checkErrorCode "swapMVar" $ cmmOp (cmm'mvar_swap (unptr p) (unptr inp) (unptr outp))
+    peek outp
 {-# INLINE swapMVar #-}
 
 
@@ -174,8 +169,7 @@ swapMVar (StoredMVar _ fp) x
 putMVar :: Storable a => StoredMVar a -> a -> IO ()
 putMVar (StoredMVar _ fp) x = mask_ $ withForeignPtr fp $ \p -> alloca $ \lp -> do
     poke lp x
-    r <- cmmOp (cmm'mvar_put (unptr p) (unptr lp))
-    when (r /= 0) $ throwErrno $ "putMVar failed with code " ++ show r
+    checkErrorCode "putMVar" $ cmmOp (cmm'mvar_put (unptr p) (unptr lp))
 {-# NOINLINE putMVar #-}
 
 -- | A non-blocking version of 'takeMVar'.  The 'tryTakeMVar' function
@@ -231,9 +225,16 @@ checkNullPointer :: String -> IO (Ptr a) -> IO (Ptr a)
 checkNullPointer s k = do
   p <- k
   if p == nullPtr
-  then throwErrno ("StoredMVar." ++ s ++ ": FFI returned NULL pointer.")
+  then ioError $ errnoToIOError ("StoredMVar." ++ s ++ ": FFI returned NULL pointer.") eINVAL Nothing Nothing
   else return p
 {-# INLINE checkNullPointer #-}
+
+checkErrorCode :: String -> IO CInt -> IO ()
+checkErrorCode s k = do
+  e <- k
+  when (e /= 0) $
+    ioError $ errnoToIOError ("StoredMVar." ++ s ++ ": FFI failed with code " ++ show e) (Errno e) Nothing Nothing
+{-# INLINE checkErrorCode #-}
 
 
 foreign import ccall unsafe "mvar_new"
@@ -272,8 +273,8 @@ foreign import prim "cmm_mvar_read"
 foreign import prim "cmm_mvar_swap"
   cmm'mvar_swap :: Addr# -> Addr# -> Addr# -> State# RealWorld -> (# State# RealWorld, Int# #)
 
-cmmOp :: (State# RealWorld -> (# State# RealWorld, Int# #)) -> IO Int
-cmmOp op = IO (\s0 -> case op s0 of (# s1, code #) -> (# s1, I# code #))
+cmmOp :: (State# RealWorld -> (# State# RealWorld, Int# #)) -> IO CInt
+cmmOp op = IO (\s0 -> case op s0 of (# s1, code #) -> (# s1, CInt (I32# code) #))
 
 unptr :: Ptr a -> Addr#
 unptr (Ptr p) = p

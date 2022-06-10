@@ -48,8 +48,7 @@ import Foreign.Storable
 import System.Environment                (lookupEnv)
 import Text.Read                         (readMaybe)
 
-import GHC.Exts (Addr#, Int#, RealWorld, State#)
-import GHC.Int  (Int32(I32#)) 
+import GHC.Exts (Int(I#), Addr#, Int#, RealWorld, State#)
 import GHC.IO   (IO (..))
 import GHC.Ptr  (Ptr (..))
 
@@ -274,7 +273,7 @@ foreign import prim "cmm_mvar_swap"
   cmm'mvar_swap :: Addr# -> Addr# -> Addr# -> State# RealWorld -> (# State# RealWorld, Int# #)
 
 cmmOp :: (State# RealWorld -> (# State# RealWorld, Int# #)) -> IO CInt
-cmmOp op = IO (\s0 -> case op s0 of (# s1, code #) -> (# s1, CInt (I32# code) #))
+cmmOp op = IO (\s0 -> case op s0 of (# s1, code #) -> (# s1, fromIntegral (I# code) #))
 
 unptr :: Ptr a -> Addr#
 unptr (Ptr p) = p

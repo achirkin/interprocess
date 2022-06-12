@@ -10,7 +10,7 @@ import System.IO
 import System.IO.Temp      (withSystemTempFile)
 
 
--- | Temporary redirect the output of a handle to a ByteString (e.g. `stdout` or `stderr`).
+-- | Temporary redirect the output of a handle to an output String (e.g. `stdout` or `stderr`).
 redirectHandle :: Handle -> IO a -> IO (String, a)
 redirectHandle origHandle action = withSystemTempFile "interprocess.out" $ \_ tempFile -> do
     start <- hGetPosn tempFile

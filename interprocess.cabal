@@ -108,10 +108,10 @@ test-suite StoredMVar
     hs-source-dirs:      test
     build-depends:       base >= 4.11
                        , typed-process >= 0.2.5
-                       , process >= 1.2.1.0
                        , async
                        , containers
                        , bytestring
                        , stm
+                       , temporary
                        , interprocess
     ghc-options:         -threaded -Wall

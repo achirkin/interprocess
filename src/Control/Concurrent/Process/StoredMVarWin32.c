@@ -6,6 +6,8 @@
 #include <stdatomic.h>
 #include <windows.h>
 
+#include <sys\timeb.h> 
+
 #ifndef WAIT_OBJECT_1
 #define WAIT_OBJECT_1 ((WAIT_OBJECT_0) + 1)
 #endif
@@ -72,6 +74,60 @@ typedef struct MVar {
    */
   SharedObjectName mvarName;
 } MVar;
+
+
+struct time_me {
+  struct timeb start;
+  char* label;
+};
+
+static inline struct time_me start_TIME_IT(const char* label, int size) {
+  struct time_me t;
+  ftime(&(t.start));
+  t.label = (char*) malloc (size);
+  memcpy(t.label, label, size);
+  return t;
+}
+
+static inline void finalize_TIME_IT(struct time_me *t) {
+  struct timeb stop;
+  ftime(&stop);
+  int diff = (int)(1000.0 * (stop.time - t->start.time) + (stop.millitm - t->start.millitm));
+  INTERPROCESS_LOG_DEBUG("[%s] elapsed time: %d ms\n", t->label, diff);
+  free(t->label);
+}
+
+#define CAT(a, b) a ## b
+#define CAT2(a, b) CAT(a, b)
+#define TIME_IT(label) \
+  __attribute__((cleanup(finalize_TIME_IT))) struct time_me CAT2(_t, __LINE__) = start_TIME_IT(label, sizeof label);
+
+
+struct state_me {
+  MVar* mvar;
+  char* label;
+};
+
+static inline struct state_me start_STATE_IT(MVar *m, const char* label, int size) {
+  struct state_me s;
+  s.mvar = m;
+  s.label = (char*) malloc (size);
+  memcpy(s.label, label, size);
+  INTERPROCESS_LOG_DEBUG("[%s] enter state: take = 0x%x; put = 0x%x\n", s.label, 
+    WaitForSingleObject(m->canTakeE, 0), WaitForSingleObject(m->canPutE, 0));
+  return s;
+}
+
+static inline void finalize_STATE_IT(struct state_me *s) {
+  INTERPROCESS_LOG_DEBUG("[%s] exit state: take = 0x%x; put = 0x%x; guard acquired = %d\n", s->label, 
+    WaitForSingleObject(s->mvar->canTakeE, 0), WaitForSingleObject(s->mvar->canPutE, 0), ReleaseMutex(s->mvar->guardM) != 0);
+  free(s->label);
+}
+
+#define STATE_IT(label, mvar) \
+  __attribute__((cleanup(finalize_STATE_IT))) struct state_me CAT2(_s, __LINE__) = start_STATE_IT(mvar, label, sizeof label);
+
+
 
 /** Get the pending readers counter value. */
 static inline int get_pendingReaders(MVar *mvar) {
@@ -233,10 +289,25 @@ static inline DWORD wait_interruptible(MVar *mvar, StgStablePtr tso,
                                        HANDLE *handles) {
   DWORD r;
   do {
-    r = WaitForMultipleObjects(2, handles, TRUE, mvar->statePtr->maxWaitMs);
-    if (r == WAIT_TIMEOUT && has_blocked_exceptions(tso)) {
-      SetLastError(EINTR);
-      return WAIT_FAILED;
+    {
+      INTERPROCESS_LOG_DEBUG("wait_interruptible/WaitForMultipleObjects.Before: %x %x\n",
+        WaitForSingleObject(mvar->canTakeE, 0), WaitForSingleObject(mvar->canPutE, 0));
+      TIME_IT("wait_interruptible/WaitForMultipleObjects");
+      r = WaitForMultipleObjects(2, handles, TRUE, mvar->statePtr->maxWaitMs);
+    }
+      INTERPROCESS_LOG_DEBUG("wait_interruptible/WaitForMultipleObjects.After: %x %x %x %d\n",
+        WaitForSingleObject(mvar->canTakeE, 0), WaitForSingleObject(mvar->canPutE, 0), r, handles == &(mvar->canTakeE));
+      // INTERPROCESS_LOG_DEBUG("Error code %d (0x%x)", GetLastError(), GetLastError());
+    if (r == WAIT_TIMEOUT) {
+      bool hasex;
+      {
+        TIME_IT("wait_interruptible/has_blocked_exceptions");
+        hasex = has_blocked_exceptions(tso);
+      }
+      if (hasex) {
+        SetLastError(EINTR);
+        return WAIT_FAILED;
+      }
     }
   } while (r == WAIT_TIMEOUT);
   return r;
@@ -249,6 +320,7 @@ static inline size_t mvar_state_size64() {
 }
 
 MVar *mvar_new(size_t byteSize, int max_wait_ms) {
+  TIME_IT("mvar_new");
   // allocate MVar
   MVar *mvar = malloc(sizeof(*mvar));
   if (mvar == NULL) goto failed;
@@ -333,6 +405,7 @@ failed:
 }
 
 MVar *mvar_lookup(const char *name) {
+  TIME_IT("mvar_lookup");
   // allocate MVar
   MVar *mvar = malloc(sizeof(*mvar));
   if (mvar == NULL) goto failed;
@@ -428,6 +501,8 @@ void mvar_destroy(MVar *mvar) {
 }
 
 int mvar_take(MVar *mvar, void *localDataPtr, StgStablePtr tso) {
+  STATE_IT("mvar_take", mvar);
+  TIME_IT("mvar_take");
   int pr_prev = INT_MAX, pr_cur;
   do {
     if (!interpret_wait("mvar_take", mvar,
@@ -466,6 +541,8 @@ int mvar_trytake(MVar *mvar, void *localDataPtr) {
 }
 
 int mvar_put(MVar *mvar, void *localDataPtr, StgStablePtr tso) {
+  STATE_IT("mvar_put", mvar);
+  TIME_IT("mvar_put");
   if (!interpret_wait("mvar_put", mvar,
                       wait_interruptible(mvar, tso, &(mvar->guardM)), NULL,
                       mvar->canTakeE))
@@ -476,6 +553,7 @@ int mvar_put(MVar *mvar, void *localDataPtr, StgStablePtr tso) {
 }
 
 int mvar_tryput(MVar *mvar, void *localDataPtr) {
+  TIME_IT("mvar_tryput");
   if (!interpret_wait("mvar_tryput", mvar,
                       WaitForSingleObject(mvar->guardM, INFINITE),
                       mvar->canPutE, mvar->canTakeE))
@@ -486,13 +564,26 @@ int mvar_tryput(MVar *mvar, void *localDataPtr) {
 }
 
 int mvar_read(MVar *mvar, void *localDataPtr, StgStablePtr tso) {
+  STATE_IT("mvar_read", mvar);
+  TIME_IT("mvar_read");
   DWORD r = WaitForSingleObject(mvar->guardM, INFINITE);
+  TIME_IT("mvar_read/guarded");
   if (r == WAIT_OBJECT_0 || r == WAIT_ABANDONED_0) {
+    TIME_IT("mvar_read/waiting");
     if (!is_signalled(mvar->canTakeE)) {
-      inc_pendingReaders(mvar);
-      ASSERT_TRUE(ReleaseMutex(mvar->guardM));
-      r = wait_interruptible(mvar, tso, &(mvar->canTakeE));
-      dec_pendingReaders(mvar);
+      {
+        TIME_IT("mvar_read/waiting/inc");
+        inc_pendingReaders(mvar);
+        ASSERT_TRUE(ReleaseMutex(mvar->guardM));
+      }
+      {
+        TIME_IT("mvar_read/waiting/main");
+        r = wait_interruptible(mvar, tso, &(mvar->canTakeE));
+      }
+      {
+        TIME_IT("mvar_read/waiting/dec");
+        dec_pendingReaders(mvar);
+      }
     }
   }
   if (!interpret_wait("mvar_read", mvar, r, NULL, mvar->canPutE)) return 1;
@@ -502,6 +593,7 @@ int mvar_read(MVar *mvar, void *localDataPtr, StgStablePtr tso) {
 }
 
 int mvar_tryread(MVar *mvar, void *localDataPtr) {
+  TIME_IT("mvar_tryread");
   if (!interpret_wait("mvar_tryread", mvar,
                       WaitForSingleObject(mvar->guardM, INFINITE),
                       mvar->canTakeE, mvar->canPutE))
@@ -512,6 +604,7 @@ int mvar_tryread(MVar *mvar, void *localDataPtr) {
 }
 
 int mvar_swap(MVar *mvar, void *inPtr, void *outPtr, StgStablePtr tso) {
+  TIME_IT("mvar_swap");
   if (!interpret_wait("mvar_swap", mvar,
                       wait_interruptible(mvar, tso, &(mvar->canTakeE)), NULL,
                       mvar->canPutE))
@@ -523,6 +616,7 @@ int mvar_swap(MVar *mvar, void *inPtr, void *outPtr, StgStablePtr tso) {
 }
 
 int mvar_tryswap(MVar *mvar, void *inPtr, void *outPtr) {
+  TIME_IT("mvar_tryswap");
   if (!interpret_wait("mvar_tryswap", mvar,
                       WaitForSingleObject(mvar->guardM, INFINITE),
                       mvar->canTakeE, mvar->canPutE))

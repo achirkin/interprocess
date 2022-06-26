@@ -5,17 +5,21 @@ module Tools.Runner (runTests, TestSpec (..)) where
 
 import           Control.Concurrent                    (threadDelay)
 import           Control.Concurrent.Async
-import qualified Control.Concurrent.Chan               as Chan
+import qualified Control.Concurrent.MVar               as StdMVar
 import           Control.Concurrent.Process.StoredMVar
-import           Control.Exception                     (catch)
-import           Control.Monad                         (foldM, forever)
+import           Control.Exception                     (SomeException, catch,
+                                                        evaluate)
+import           Control.Monad                         (foldM, forever, when)
 import           Control.Monad.STM                     (atomically)
+import qualified Data.ByteString.Char8                 as BS
 import           Data.ByteString.Lazy.Char8            (unpack)
 import           Data.Foldable                         (fold)
+import           Data.IORef                            (atomicModifyIORef',
+                                                        newIORef)
 import qualified Data.List                             as List
 import qualified Data.Map                              as Map
 import           Data.Tuple                            (swap)
-import           Foreign.Storable
+import           Foreign.Storable                      (Storable)
 import           System.Environment                    (getArgs,
                                                         getExecutablePath)
 import           System.Exit
@@ -58,15 +62,21 @@ stripSpec (Repeat _ s)        = stripSpec s
 stripSpec s                   = s
 
 data SpecParams = SpecParams
-  { exec    :: String -- ^ Executable name
-  , timeout :: Int -- ^ Terminate process after this amount of milliseconds
+  { exec                :: String -- ^ Executable name
+  , timeout             :: Int -- ^ Terminate process after this amount of milliseconds
+  , processStartTimeout :: Int -- ^ Fail if the child process not all child processes start within this time
   }
 
 defaultSpecParams :: String -> SpecParams
 defaultSpecParams execFile = SpecParams
   { exec = execFile
   , timeout = 1000
+  , processStartTimeout = 10000
   }
+
+-- | A random string for a handshake between the processes.
+startToken :: String
+startToken = "KxmpaDIlwnSlfp01==123=123=1"
 
 -- | Run all tests in the list. Use it as the `main`:
 --
@@ -89,6 +99,9 @@ runTests specs = do
     -- run particular test routine
     [n, sk, sm] -> do
         hSetBuffering stdout LineBuffering
+        putStrLn startToken
+        returnedToken <- getLine
+        when (startToken /= returnedToken) $ fail "Child start handshake failed."
         TestSpec _ roles <- case List.find ((== n) . testName) specs of
             Nothing   -> fail $ "Unknown test name: " ++ show n
             Just spec -> pure $ stripSpec spec
@@ -123,18 +136,17 @@ runSpec pams (Repeat n s) = do
         Success -> pure ()
         _ -> do
           putStrLn $ "[" ++ testName s ++ "] Failed on test iteration " ++ show i
-          putStrLn out
+          BS.putStrLn out
       return r
     go failure _ = pure failure
 runSpec pams (TestSpec name (roles :: [(k, k -> StoredMVar ctx -> IO TestResult)])) = do
     putStrLn $ "[" ++ name ++ "] Running..."
-    childIns <- Chan.newChan
     comms <- newEmptyMVar :: IO (StoredMVar ctx)
+    childrenLeft <- newIORef $ length roles
+    readyToGo <- StdMVar.newEmptyMVar :: IO (StdMVar.MVar ())
     let k = show $ mVarName comms
-    r <- withAsync (forever $ Chan.readChan childIns >>= printChildLine) $ \_ -> do
-        r <- runConcurrently $ foldMap (\(l, r) -> go childIns l [name, r, k]) labelsroles
-        r `seq` comms `seq` performMajorGC
-        return r
+    r <- runConcurrently $ foldMap (\(l, r) -> go childrenLeft readyToGo l [name, r, k]) labelsroles
+    r `seq` comms `seq` performMajorGC
     putStrLn $ "[" ++ name ++ "] Result: " ++ displayResult r
     return r
   where
@@ -150,31 +162,46 @@ runSpec pams (TestSpec name (roles :: [(k, k -> StoredMVar ctx -> IO TestResult)
 
     withLabel label s = "  [" ++ label ++ "] " ++ s
 
-    printChildLine (label, s) = putStrLn $ withLabel label s
-
-    channelHandle sink i handle = forever
-      (hGetLine handle >>= \s -> Chan.writeChan sink (i, s))
-        `catch` (const mempty :: IOError -> IO ())
+    channelHandle i handle = forever (hGetLine handle >>= (putStrLn . withLabel i))
+      `catch` (const $ return mempty :: IOError -> IO ())
 
     mkConf x
       = setStdout createPipe
+      $ setStdin createPipe
       $ setStderr byteStringOutput
       $ proc (exec pams) x
 
-    checkTimeout label (Left ()) = Failure $ withLabel label $
-      "the process did not finish in " ++ show (timeout pams) ++ " milliseconds"
-    checkTimeout _ (Right r) = r
+    errToResult :: String -> SomeException -> IO TestResult
+    errToResult label = return . Failure . withLabel label . show
 
-    go stdSink label x = Concurrently
-      $ fmap (checkTimeout label)
-      $ withProcessWait (mkConf x) $ \p ->
-        race (threadDelay $ 1000 * timeout pams) $
-        withAsync (channelHandle stdSink label (getStdout p)) $ \sink -> do
-          ecode <- waitExitCode p
-          r <- case ecode of
-            ExitSuccess   -> pure Success
-            ExitFailure _ -> do
-              errs <- atomically (getStderr p)
-              return $ Failure (unlines . map (withLabel label) $ lines $ unpack errs)
-          wait sink
-          return r
+    messWithProcess label x action = withProcessTerm (mkConf x) action `catch` errToResult label
+
+    go childrenLeft readyToGo label x = Concurrently
+      $ messWithProcess label x $ \p -> hGetLine (getStdout p) >>= \handshake ->
+        if handshake /= startToken
+        then return (Failure $ withLabel label ("Unexpected starting token: " ++ handshake))
+        else withAsyncBound (channelHandle label (getStdout p)) $ \sink -> do
+          iAmLast <- atomicModifyIORef' childrenLeft (\n -> (n - 1, n == 1))
+          when iAmLast $ StdMVar.putMVar readyToGo ()
+          ready <- race (threadDelay $ 1000 * processStartTimeout pams) (StdMVar.readMVar readyToGo)
+          case ready of
+            Left () -> return $ Failure $ withLabel label "child process didn't start in time"
+            Right () -> do
+              hPutStrLn (getStdin p) handshake
+              hClose (getStdin p)
+              r <- race (threadDelay $ 1000 * timeout pams) $ do
+                ecode <- (Right <$> waitExitCode p) `catch` (return . Left)
+                case ecode of
+                  Right ExitSuccess  -> pure Success
+                  Right (ExitFailure _) -> do
+                    errs <- atomically (getStderr p)
+                    return $ Failure (unlines . map (withLabel label) $ lines $ unpack errs)
+                  Left e -> errToResult label e
+              _ <- evaluate r
+              wait sink
+              hFlush stdout
+              hFlush stderr
+              case r of
+                Left () -> return $ Failure $ withLabel label $
+                    "the process did not finish in " ++ show (timeout pams) ++ " milliseconds"
+                Right s -> return s

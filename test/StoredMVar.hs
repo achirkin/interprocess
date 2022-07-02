@@ -71,24 +71,7 @@ readersTakers = Repeat 100 $ TestSpec "ReadersTakers" $
 
 
 asyncException :: TestSpec
-asyncException = Repeat 10 $ TestSpec "AsyncException" [((), run)]
-  where
-    run :: () -> StoredMVar Int -> IO TestResult
-    run _ mvar = do
-      putStrLn "Starting!"
-      locked <- async $ putStrLn "started async" >> takeMVar mvar
-      putStrLn "Gonna delay"
-      threadDelay (55000 :: Int)
-      putStrLn "delayed"
-      killed <- async $ cancel locked
-      putStrLn "cancelled"
-      threadDelay (55000 :: Int)
-      putStrLn "Waited more"
-      r <- poll killed
-      putStrLn "Checked if killed"
-      return $ case r of
-        Nothing -> Failure "The thread did not finish in time."
-        Just _  -> Success
+asyncException = Repeat 10 $ TestSpec "AsyncException" [((), runA0)]
 
 asyncException0 :: TestSpec
 asyncException0 = TestSpec "AsyncException" [((), runA0)]
@@ -98,11 +81,11 @@ runA0 _ mvar = do
   putStrLn "Starting!"
   locked <- async $ putStrLn "started async" >> takeMVar mvar
   putStrLn "Gonna delay"
-  threadDelay (55000 :: Int)
+  threadDelay (80000 :: Int)
   putStrLn "delayed"
   killed <- async $ cancel locked
   putStrLn "cancelled"
-  threadDelay (55000 :: Int)
+  threadDelay (150000 :: Int)
   putStrLn "Waited more"
   r <- poll killed
   putStrLn "Checked if killed"

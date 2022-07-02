@@ -4,12 +4,12 @@ module Main (main) where
 import Control.Concurrent                    (threadDelay)
 import Control.Concurrent.Async
 import Control.Concurrent.Process.StoredMVar
+import Control.Monad                         (when)
+import System.Environment                    (getArgs)
+import System.IO                             (hFlush, stdout)
+import System.Mem                            (performMajorGC)
 import Tools.Runner
 import Tools.TestResult
-import System.IO (hFlush, stdout)
-import System.Environment (getArgs)
-import Control.Monad (when)
-import System.Mem (performMajorGC)
 
 data BasicRole = Master | Slave
   deriving (Eq, Ord, Show, Read)
@@ -79,20 +79,21 @@ asyncException0 = TestSpec "AsyncException" [((), runA0)]
 
 runA0 :: () -> StoredMVar Int -> IO TestResult
 runA0 _ mvar = do
-  putStrLn "Starting!"
+  let timeMs = 50 :: Int
   locked <- async $ takeMVar mvar
-  putStrLn "Gonna delay"
-  threadDelay (80000 :: Int)
-  putStrLn "delayed"
+  threadDelay $ timeMs * 1000
   killed <- async $ cancel locked
-  putStrLn "cancelled"
-  threadDelay (350000 :: Int)
-  putStrLn "Waited more"
-  r <- poll killed
-  putStrLn "Checked if killed"
-  return $ case r of
-    Nothing -> Failure "The thread did not finish in time."
-    Just _  -> Success
+  let pollStatus t = do
+        let t1 = t + timeMs
+        threadDelay $ timeMs * 1000
+        r <- poll killed
+        case r of
+          Nothing -> pollStatus t1
+          Just _  -> return t1
+   -- NB: the whole thread is gonna be killed by the test runner if this does not finish within certain time.
+  elapsed <- pollStatus 0
+  putStrLn $ "Cancelled a thread within " ++ show elapsed ++ " ms"
+  return Success
 
 
 main :: IO ()

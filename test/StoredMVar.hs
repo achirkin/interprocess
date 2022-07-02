@@ -6,6 +6,9 @@ import Control.Concurrent.Async
 import Control.Concurrent.Process.StoredMVar
 import Tools.Runner
 import Tools.TestResult
+import System.IO (hFlush, stdout)
+import System.Environment (getArgs)
+import Control.Monad (when)
 
 data BasicRole = Master | Slave
   deriving (Eq, Ord, Show, Read)
@@ -88,25 +91,32 @@ asyncException = Repeat 10 $ TestSpec "AsyncException" [((), run)]
         Just _  -> Success
 
 asyncException0 :: TestSpec
-asyncException0 = TestSpec "AsyncException" [((), run)]
-  where
-    run :: () -> StoredMVar Int -> IO TestResult
-    run _ mvar = do
-      putStrLn "Starting!"
-      locked <- async $ putStrLn "started async" >> takeMVar mvar
-      putStrLn "Gonna delay"
-      threadDelay (55000 :: Int)
-      putStrLn "delayed"
-      killed <- async $ cancel locked
-      putStrLn "cancelled"
-      threadDelay (55000 :: Int)
-      putStrLn "Waited more"
-      r <- poll killed
-      putStrLn "Checked if killed"
-      return $ case r of
-        Nothing -> Failure "The thread did not finish in time."
-        Just _  -> Success
+asyncException0 = TestSpec "AsyncException" [((), runA0)]
+
+runA0 :: () -> StoredMVar Int -> IO TestResult
+runA0 _ mvar = do
+  putStrLn "Starting!"
+  locked <- async $ putStrLn "started async" >> takeMVar mvar
+  putStrLn "Gonna delay"
+  threadDelay (55000 :: Int)
+  putStrLn "delayed"
+  killed <- async $ cancel locked
+  putStrLn "cancelled"
+  threadDelay (55000 :: Int)
+  putStrLn "Waited more"
+  r <- poll killed
+  putStrLn "Checked if killed"
+  return $ case r of
+    Nothing -> Failure "The thread did not finish in time."
+    Just _  -> Success
 
 
 main :: IO ()
-main = runTests [simpleTakePut, readersTakers, asyncException0, asyncException]
+main = do
+  args <- getArgs
+  when (null args) $ do
+    putStrLn ""
+    newEmptyMVar >>= runA0 () >>= print
+    hFlush stdout
+
+  runTests [simpleTakePut, readersTakers, asyncException0, asyncException]

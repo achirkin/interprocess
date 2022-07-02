@@ -68,18 +68,26 @@ readersTakers = Repeat 100 $ TestSpec "ReadersTakers" $
 
 
 asyncException :: TestSpec
-asyncException = Repeat 10 $ TestSpec "AsyncException" [((), run)]
+asyncException = Repeat 10 $ WithTimeLimit 2000 $ TestSpec "AsyncException" [((), run)]
   where
     run :: () -> StoredMVar Int -> IO TestResult
     run _ mvar = do
+      let timeMs = 50 :: Int
       locked <- async $ takeMVar mvar
-      threadDelay (55000 :: Int)
+      threadDelay $ timeMs * 1000
       killed <- async $ cancel locked
-      threadDelay (55000 :: Int)
-      r <- poll killed
-      return $ case r of
-        Nothing -> Failure "The thread did not finish in time."
-        Just _  -> Success
+      let pollStatus t = do
+            let t1 = t + timeMs
+            threadDelay $ timeMs * 1000
+            r <- poll killed
+            case r of
+              Nothing -> pollStatus t1
+              Just _  -> return t1
+      -- NB: the whole thread is gonna be killed by the test runner
+      --     if pollStatus does not finish within the time defined in SpecParams.
+      elapsed <- pollStatus 0
+      putStrLn $ "Cancelled a thread within " ++ show elapsed ++ " ms"
+      return Success
 
 main :: IO ()
 main = runTests [simpleTakePut, readersTakers, asyncException]

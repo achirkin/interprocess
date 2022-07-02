@@ -317,9 +317,11 @@ int interprocess_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mut,
   }
 
 int mvar_take(MVar *mvar, void *localDataPtr, StgStablePtr tso) {
+  INTERPROCESS_LOG_DEBUG("Entered mvar_take\n");
   TIME_IT("mvar_take");
   MVarState *state = mvar->statePtr;
   USE_MUTEX(state);
+  INTERPROCESS_LOG_DEBUG("mvar_take: acquired the mutex (%d, %d)\n", state->isFull, state->pendingReaders);
   while (!(state->isFull) || state->pendingReaders > 0) {
     TIME_IT("mvar_take/while");
     if (state->pendingReaders > 0) pthread_cond_broadcast(&(state->canTakeC));

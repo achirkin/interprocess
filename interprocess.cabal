@@ -31,7 +31,7 @@ flag examples
 flag dev
     description:
       Development build with debugging and with no optimization
-    default: False
+    default: True
 
 library
     hs-source-dirs:    src

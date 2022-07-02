@@ -1,5 +1,5 @@
 #include <common.h>
-
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -7,6 +7,7 @@
 #include <stdatomic.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/timeb.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -15,6 +16,34 @@
 #else
 #define ASSERT_ZERO(op) op
 #endif
+
+struct time_me {
+  struct timeb start;
+  char *label;
+};
+
+static inline struct time_me start_TIME_IT(const char *label, int size) {
+  struct time_me t;
+  ftime(&(t.start));
+  t.label = (char *)malloc(size);
+  memcpy(t.label, label, size);
+  return t;
+}
+
+static inline void finalize_TIME_IT(struct time_me *t) {
+  struct timeb stop;
+  ftime(&stop);
+  int diff = (int)(1000.0 * (stop.time - t->start.time) +
+                   (stop.millitm - t->start.millitm));
+  INTERPROCESS_LOG_DEBUG("[%s] elapsed time: %d ms\n", t->label, diff);
+  free(t->label);
+}
+
+#define CAT(a, b) a##b
+#define CAT2(a, b) CAT(a, b)
+#define TIME_IT(label)                                            \
+  __attribute__((cleanup(finalize_TIME_IT))) struct time_me CAT2( \
+      _t, __LINE__) = start_TIME_IT(label, sizeof label);
 
 // NB: use robust mutexes
 // https://man7.org/linux/man-pages/man3/pthread_mutexattr_setrobust.3.html
@@ -282,17 +311,24 @@ int interprocess_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mut,
 
 #define WAIT_A_BIT(cond, mut, ms)                       \
   {                                                     \
+    TIME_IT("WAIT_A_BIT");                              \
     int r = interprocess_cond_timedwait(cond, mut, ms); \
     if (r != 0 && r != ETIMEDOUT) return r;             \
   }
 
 int mvar_take(MVar *mvar, void *localDataPtr, StgStablePtr tso) {
+  TIME_IT("mvar_take");
   MVarState *state = mvar->statePtr;
   USE_MUTEX(state);
   while (!(state->isFull) || state->pendingReaders > 0) {
+    TIME_IT("mvar_take/while");
     if (state->pendingReaders > 0) pthread_cond_broadcast(&(state->canTakeC));
     WAIT_A_BIT(&(state->canTakeC), &(state->mvMut), state->maxWaitMs);
-    if (has_blocked_exceptions(tso)) return EINTR;
+    {
+      bool has_some = has_blocked_exceptions(tso);
+      INTERPROCESS_LOG_DEBUG("has_blocked_exceptions = %d\n", has_some);
+      if (has_some) return EINTR;
+    }
   }
   memcpy(localDataPtr, mvar->dataPtr, state->dataSize);
   state->isFull = 0;

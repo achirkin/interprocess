@@ -9,6 +9,7 @@ import Tools.TestResult
 import System.IO (hFlush, stdout)
 import System.Environment (getArgs)
 import Control.Monad (when)
+import System.Mem (performMajorGC)
 
 data BasicRole = Master | Slave
   deriving (Eq, Ord, Show, Read)
@@ -85,6 +86,7 @@ runA0 _ mvar = do
   putStrLn "delayed"
   killed <- async $ cancel locked
   putStrLn "cancelled"
+  performMajorGC
   threadDelay (150000 :: Int)
   putStrLn "Waited more"
   r <- poll killed

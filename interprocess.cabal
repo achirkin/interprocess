@@ -27,11 +27,13 @@ flag examples
     description:
       Build example-test programs
     default: False
+    manual: True
 
 flag dev
     description:
       Development build with debugging and with no optimization
     default: False
+    manual: True
 
 library
     hs-source-dirs:    src

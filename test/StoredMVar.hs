@@ -80,14 +80,13 @@ asyncException0 = TestSpec "AsyncException" [((), runA0)]
 runA0 :: () -> StoredMVar Int -> IO TestResult
 runA0 _ mvar = do
   putStrLn "Starting!"
-  locked <- async $ putStrLn "started async" >> takeMVar mvar
+  locked <- async $ takeMVar mvar
   putStrLn "Gonna delay"
   threadDelay (80000 :: Int)
   putStrLn "delayed"
   killed <- async $ cancel locked
   putStrLn "cancelled"
-  performMajorGC
-  threadDelay (150000 :: Int)
+  threadDelay (350000 :: Int)
   putStrLn "Waited more"
   r <- poll killed
   putStrLn "Checked if killed"

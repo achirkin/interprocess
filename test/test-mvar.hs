@@ -90,4 +90,4 @@ asyncException = Repeat 10 $ WithTimeLimit 2000 $ TestSpec "AsyncException" [(()
       return Success
 
 main :: IO ()
-main = runTests [simpleTakePut, readersTakers, asyncException]
+main = runTests_ [simpleTakePut, readersTakers, asyncException]

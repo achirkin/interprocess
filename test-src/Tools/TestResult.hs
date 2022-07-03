@@ -1,4 +1,4 @@
-{-# LANGUAGE GeneralisedNewtypeDeriving #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Tools.TestResult (TestResult(..), displayResult, finish, Timed, mkTimed, iterations, avgTime, totalTime, timed, result, NominalDiffTime) where
 
 import Control.Applicative

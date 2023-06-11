@@ -2,17 +2,12 @@
 
 #include <interprocess/array.hpp>
 #include <interprocess/map.hpp>
-#include <interprocess/shared_blob.hpp>
 #include <interprocess/shared_object_name.hpp>
 
 #include <unistd.h>  // sleep
 // https://stackoverflow.com/questions/397075/what-is-the-difference-between-exit-and-abort
 
 int main() {
-  interprocess::shared_blob_t sb0{50};
-  interprocess::shared_blob_t sb1{*sb0.name()};
-  interprocess::shared_blob_t sb2{sb1};
-
   printf("Array section...\n");
   auto a = interprocess::array_t<int, double>::create();
   printf("Allocated an array...\n");
@@ -42,15 +37,10 @@ int main() {
          int(decltype(m)::kRadixBase), int(decltype(m)::kKeySize), int(decltype(m)::kDepthBits),
          int(decltype(m)::kTrailingBits));
 
-  printf("Hello world: %s\n", sb0.name()->value.data());
-  reinterpret_cast<int*>(sb0.data())[0] = 42;
-  // sleep(10);
-
   for (int i = 0; i < 10; i++) {
     printf("%d: %s\n", i, interprocess::shared_object_name_t{}.value.data());
   }
-  printf("Answer 1: %d\n", reinterpret_cast<int*>(sb1.data())[0]);
-  printf("Answer 2: %d\n", reinterpret_cast<int*>(sb2.data())[0]);
+
   m.set(3, 15.3);
   m.set(3257, 42);
   m.set(884545600003257, 0.77);

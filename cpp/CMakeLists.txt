@@ -12,14 +12,12 @@ add_library(interprocess
 if (WIN32)
 target_sources(interprocess
   PRIVATE
-    src/interprocess/win32/shared_blob.cpp
 )
 else()
 target_sources(interprocess
   PRIVATE
     src/interprocess/posix/growing_blob.cpp
     src/interprocess/posix/memory_map.cpp
-    src/interprocess/posix/shared_blob.cpp
     src/interprocess/posix/storage_descriptor.cpp
 )
 endif()

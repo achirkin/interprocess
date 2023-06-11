@@ -11,17 +11,6 @@
 
 namespace interprocess {
 
-template <typename From, typename To, typename = void>
-struct is_reinterpretable : std::false_type {};
-
-template <typename From, typename To>
-struct is_reinterpretable<From, To,
-                          std::void_t<decltype(reinterpret_cast<To>(std::declval<From>()))>>
-    : std::true_type {};
-
-template <typename From, typename To>
-inline constexpr bool is_reinterpretable_v = is_reinterpretable<From, To>::value;  // NOLINT
-
 /** Lock-free non-shrinking map */
 template <std::uint8_t B, typename K, typename V>
 class map_t {

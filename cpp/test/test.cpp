@@ -31,8 +31,6 @@ int main() {
 
   auto m = interprocess::map_t<8, std::size_t, float>::create();
 
-  static_assert(interprocess::is_reinterpretable_v<int, void*>);
-
   printf("Map: radix = %d, key bits = %d, depth bits = %d, trailing bits = %d\n",
          int(decltype(m)::kRadixBase), int(decltype(m)::kKeySize), int(decltype(m)::kDepthBits),
          int(decltype(m)::kTrailingBits));

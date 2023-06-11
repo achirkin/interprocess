@@ -54,13 +54,45 @@ class map_t {
   static_assert(kDepthBits <= kTrailingBits,
                 "Tree depth is too big because the radix base is too small.");
 
-  inline map_t() noexcept
-      : nodes_{array_t<index_type, node_t>::create()},
-        leafs_{array_t<index_type, leaf_t>::create(*(nodes_.name()) + "L")} {
+  map_t(const map_t& other) = delete;
+  auto operator=(const map_t& other) = delete;
+  map_t(map_t&& other) noexcept
+      : nodes_{std::exchange(other.nodes_, growing_blob_t{})},
+        leafs_{std::exchange(other.leafs_, 0)},
+        new_node_ix_{std::exchange(other.new_node_ix_, 0)},
+        new_leaf_ix_{std::exchange(other.new_leaf_ix_, 0)} {}
+  inline auto operator=(map_t&& other) noexcept -> map_t& {
+    std::swap(nodes_, other.nodes_);
+    std::swap(new_node_ix_, other.new_node_ix_);
+    std::swap(new_leaf_ix_, other.new_leaf_ix_);
+    return *this;
+  }
+  ~map_t() noexcept = default;
+
+  /** Create a new shared map */
+  static auto create(const shared_object_name_t& name = {}) noexcept -> map_t {
+    auto nodes = array_t<index_type, node_t>::create(name);
+    auto leafs = array_t<index_type, leaf_t>::create(*(nodes.name()) + "L");
     // initialize the desciption
-    new (&nodes_[0]) description_t{};
-    // The default value will be returned whenever the entry is
-    new (&leafs_[0]) leaf_t{0, value_type{}};
+    new (&nodes[0]) description_t{};
+    // The default value will be returned whenever the entry is empty
+    new (&leafs[0]) leaf_t{0, value_type{}};
+    return map_t{std::move(nodes), std::move(leafs)};
+  }
+
+  /** Look up an existing shared map*/
+  static auto lookup(const shared_object_name_t& name) noexcept -> map_t {
+    auto nodes = array_t<index_type, node_t>::lookup(name);
+    auto leafs = array_t<index_type, leaf_t>::lookup(*(nodes.name()) + "L");
+    return map_t{std::move(nodes), std::move(leafs)};
+  }
+
+  /**
+   * Get the name of the map.
+   * It returns `nullptr` if the underlying storage wasn't created due to an error.
+   */
+  [[nodiscard]] inline auto name() const noexcept -> const shared_object_name_t* {
+    return nodes_.name();
   }
 
   [[nodiscard]] auto get(key_type key) const noexcept -> value_type {
@@ -136,6 +168,9 @@ class map_t {
   // considered tolerable.
   index_type new_leaf_ix_ = 0;  // point to the dummy/default leaf that is already allocated
   index_type new_node_ix_ = kUnusedNodeIx;  // a reserved node id (cannot use a valid ix 0)
+
+  inline map_t(array_t<index_type, node_t>&& nodes, array_t<index_type, leaf_t>&& leafs) noexcept
+      : nodes_{std::move(nodes)}, leafs_{std::move(leafs)} {}
 
   [[nodiscard]] auto get_description() noexcept -> description_t& {
     return *reinterpret_cast<description_t*>(&(nodes_[0]));

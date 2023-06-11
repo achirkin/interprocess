@@ -34,7 +34,7 @@ int main() {
   printf("Array@%d: A = %f, B = %f\n", 3333, a[3333], b[3333]);
   printf("Array@%d: A = %f, B = %f\n", 1535, a[1535], b[1535]);
 
-  interprocess::map_t<8, std::size_t, float> m{};
+  auto m = interprocess::map_t<8, std::size_t, float>::create();
 
   static_assert(interprocess::is_reinterpretable_v<int, void*>);
 
@@ -66,6 +66,7 @@ int main() {
   }
 
   printf("Full scan\n");
+  auto q = interprocess::map_t<8, std::size_t, float>::lookup(*m.name());
   int found_count = 0;
   for (int i = 0; i < 1000000; i++) {
     // printf("[A] i: %d \n", i);
@@ -73,7 +74,7 @@ int main() {
     // printf("[B] i: %d \n", i);
     if (r != 0.0f) {
       found_count++;
-      printf("[C] %d - %f\n", i, r);
+      printf("[C] %d: %f == %f\n", i, r, q.get(i));
     }
   }
   printf("...found %d records in the range.\n", found_count);

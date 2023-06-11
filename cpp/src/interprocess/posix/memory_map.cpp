@@ -36,4 +36,14 @@ memory_map_t::~memory_map_t() noexcept {
   }
 }
 
+void memory_map_t::remap(std::size_t new_size) noexcept {
+  auto new_addr = mremap(data_, size_, new_size, MREMAP_MAYMOVE);  // NOLINT
+  if (new_addr == MAP_FAILED) {
+    INTERPROCESS_LOG_DEBUG("Could not remap shared memory (mremap) (%d).\n", errno);
+  } else {
+    data_ = new_addr;
+    size_ = new_size;
+  }
+}
+
 }  // namespace interprocess

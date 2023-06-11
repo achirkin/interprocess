@@ -17,6 +17,7 @@ target_sources(interprocess
 else()
 target_sources(interprocess
   PRIVATE
+    src/interprocess/posix/growing_blob.cpp
     src/interprocess/posix/memory_map.cpp
     src/interprocess/posix/shared_blob.cpp
     src/interprocess/posix/storage_descriptor.cpp
@@ -37,7 +38,7 @@ target_compile_options(interprocess
     -Wextra
     -Wpedantic
     -Werror
-    -DINTERPROCESS_DEBUG
+    # -DINTERPROCESS_DEBUG
 )
 
 

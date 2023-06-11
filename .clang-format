@@ -1,4 +1,0 @@
-Language: Cpp
-Standard: c++17
-BasedOnStyle: Google
-IncludeBlocks: Preserve

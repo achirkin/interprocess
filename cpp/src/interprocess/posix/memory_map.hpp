@@ -26,6 +26,8 @@ struct memory_map_t {
   [[nodiscard]] inline auto data() const noexcept -> const void* { return data_; }
   /** A pointer to the mapped data */
   [[nodiscard]] inline auto data() noexcept -> void* { return data_; }
+  /** Change the size of the mapping */
+  void remap(std::size_t new_size) noexcept;
 
  private:
   std::size_t size_{0};

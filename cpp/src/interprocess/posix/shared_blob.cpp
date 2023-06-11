@@ -14,13 +14,6 @@
 
 namespace interprocess {
 
-// /** Get the pointer into the mapping at the given offset (in bytes). */
-// auto data_at(std::ptrdiff_t offset_bytes) noexcept -> void* {
-//   return data == nullptr
-//              ? nullptr
-//              : reinterpret_cast<void*>(reinterpret_cast<std::uint8_t*>(data) + offset_bytes);
-// }
-
 struct shared_blob_state_t {
   /** Offset of the data map into the file. */
   const std::size_t data_offset;
@@ -52,11 +45,6 @@ class shared_blob_impl_t {
     auto total_size = data_offset + size;
 
     if (ftruncate(descriptor_.value(), off_t(total_size)) != 0) {
-      // if (fallocate(descriptor_.value(), 0, off_t{0}, off_t(total_size)) != 0) {
-      // NB: int fallocate(int fd, int mode, off_t offset, off_t len)
-      //     is non-portable, Linux-only function.
-      //     'mode == 0' allows MT-safe growing of the file without shrinking it,
-      //     which is the best fit for my use-case.
       INTERPROCESS_LOG_DEBUG("Could not allocate shared memory (fallocate) (%d).\n", errno);
       seal();
       return;

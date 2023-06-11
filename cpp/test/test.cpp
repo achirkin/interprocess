@@ -1,16 +1,38 @@
 #include <cstdio>
 
+#include <interprocess/array.hpp>
 #include <interprocess/map.hpp>
 #include <interprocess/shared_blob.hpp>
 #include <interprocess/shared_object_name.hpp>
 
-//#include <unistd.h>  // sleep
+#include <unistd.h>  // sleep
 // https://stackoverflow.com/questions/397075/what-is-the-difference-between-exit-and-abort
 
 int main() {
   interprocess::shared_blob_t sb0{50};
   interprocess::shared_blob_t sb1{*sb0.name()};
   interprocess::shared_blob_t sb2{sb1};
+
+  printf("Array section...\n");
+  auto a = interprocess::array_t<int, double>::create();
+  printf("Allocated an array...\n");
+  a[0] = 5.0;
+  a[2] = 52.2;
+  a[53] = 233.2;
+  printf("Array A@%d = %f\n", 2, a[2]);
+  a[1535] = 44.00001;
+  printf("Array A@%d = %f\n", 1535, a[1535]);
+  auto b = interprocess::array_t<int, double>::lookup(*a.name());
+  printf("Array@%d: A = %f, B = %f\n", 1535, a[1535], b[1535]);
+  printf("Array@%d: A = %f, B = %f\n", 2, a[2], b[2]);
+  b[12] = 12.12;
+  b[738] = 738.5;
+  b[3333] = 3333.3;
+  printf("Array@%d: A = %f, B = %f\n", 1535, a[1535], b[1535]);
+  printf("Array@%d: A = %f, B = %f\n", 12, a[12], b[12]);
+  printf("Array@%d: A = %f, B = %f\n", 738, a[738], b[738]);
+  printf("Array@%d: A = %f, B = %f\n", 3333, a[3333], b[3333]);
+  printf("Array@%d: A = %f, B = %f\n", 1535, a[1535], b[1535]);
 
   interprocess::map_t<8, std::size_t, float> m{};
 
@@ -43,18 +65,18 @@ int main() {
     printf("%zu - %f\n", i, m.get(i));
   }
 
-  // printf("Full scan\n");
-  // int found_count = 0;
-  // for (int i = 0; i < 1000000; i++) {
-  //   // printf("[A] i: %d \n", i);
-  //   auto r = m.get(i);
-  //   // printf("[B] i: %d \n", i);
-  //   if (r != 0.0f) {
-  //     found_count++;
-  //     printf("[C] %d - %f\n", i, r);
-  //   }
-  // }
-  // printf("...found %d records in the range.\n", found_count);
+  printf("Full scan\n");
+  int found_count = 0;
+  for (int i = 0; i < 1000000; i++) {
+    // printf("[A] i: %d \n", i);
+    auto r = m.get(i);
+    // printf("[B] i: %d \n", i);
+    if (r != 0.0f) {
+      found_count++;
+      printf("[C] %d - %f\n", i, r);
+    }
+  }
+  printf("...found %d records in the range.\n", found_count);
 
   return 0;
 }

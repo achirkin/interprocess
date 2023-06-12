@@ -24,7 +24,7 @@ struct shared_object_name_t {
   shared_object_name_t() noexcept;
 
   /** Get the name as a C-style string. */
-  inline auto c_str() noexcept -> const char* {
+  [[nodiscard]] inline auto c_str() const noexcept -> const char* {
     return reinterpret_cast<const char*>(value.data());
   }
 

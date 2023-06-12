@@ -16,6 +16,7 @@ target_sources(interprocess
 else()
 target_sources(interprocess
   PRIVATE
+    src/interprocess/posix/blob.cpp
     src/interprocess/posix/growing_blob.cpp
     src/interprocess/posix/memory_map.cpp
     src/interprocess/posix/storage_descriptor.cpp

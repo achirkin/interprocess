@@ -1,3 +1,4 @@
+#include <climits>
 #include <cstdint>
 #include <type_traits>
 
@@ -26,6 +27,17 @@ constexpr inline auto div_rounding_up(T x, T y) -> T {
   return (x + y - 1) / y - 1;
 }
 
+/** Count the minimum number of bits required to represent the given value. */
+template <typename T, typename = std::enable_if_t<std::is_integral_v<T> || std::is_pointer_v<T>>>
+constexpr inline auto value_bitsize(T x) -> std::uint8_t {
+  std::uint8_t count = 0;
+  while (x > 0) {  // NOLINT
+    count++;
+    x >>= 1;
+  }
+  return count;
+}
+
 /** Count the number of leading zero bits. */
 template <typename T, typename = std::enable_if_t<std::is_integral_v<T> || std::is_pointer_v<T>>>
 inline auto clz(T x) -> std::uint8_t {
@@ -36,11 +48,7 @@ inline auto clz(T x) -> std::uint8_t {
   } else if constexpr (sizeof(T) == sizeof(unsigned long long)) {
     return std::uint8_t(__builtin_clzl((unsigned long long)x));
   } else {
-    std::uint8_t count = 0;
-    while ((x >> (sizeof(T) - count)) == 0) {
-      count++;
-    }
-    return count;
+    return sizeof(T) * CHAR_BIT - value_bitsize(x);
   }
 }
 

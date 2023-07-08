@@ -41,8 +41,5 @@ target_compile_options(interprocess
 )
 
 
-add_executable(test test/test.cpp)
-target_link_libraries(test
-  PRIVATE
-    interprocess
-)
+add_subdirectory(scratch)
+add_subdirectory(test)

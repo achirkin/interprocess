@@ -78,7 +78,7 @@ class blob_t {
   auto grow(std::size_t size) noexcept -> std::size_t;
   /** Get the global name of this blob, to pass it to other processes for sharing. */
   [[nodiscard]] auto name() const noexcept -> const shared_object_name_t*;
-  /**  Pointer to the region of shared memory. */
+  /** Pointer to the region of shared memory. */
   [[nodiscard]] auto data() noexcept -> void*;
   [[nodiscard]] auto data() const noexcept -> const void*;
 

@@ -93,7 +93,7 @@ class array_t {
   array_t(growing_blob_t&& data, key_type size) noexcept : blob_{data}, size_{size} {};
 
   inline void check_bounds(key_type index) const noexcept {
-    if (index >= size_) {
+    if (index >= size_) [[unlikely]] {  // NOLINT (requires C++20)
       while (index >= size_) {
         size_ <<= 1;
       }

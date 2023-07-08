@@ -2,6 +2,7 @@
 #include <interprocess/shared_object_name.hpp>
 
 #include <memory>
+#include <utility>
 
 #pragma once
 

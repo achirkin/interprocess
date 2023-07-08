@@ -7,6 +7,7 @@
 #include <sys/stat.h>  // mman mode constants, fstat
 #include <unistd.h>    // close, dup, dup2
 #include <cerrno>      // errno
+#include <utility>
 
 namespace interprocess {
 

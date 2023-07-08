@@ -5,6 +5,7 @@
 
 #include <sys/mman.h>  // mmap, munmap
 #include <cerrno>      // errno
+#include <utility>
 
 namespace interprocess {
 

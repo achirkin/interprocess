@@ -297,16 +297,16 @@ struct resource_t {
     }
     // Assuming the actor is still the only visitor to the severed node (next) and it's still marked
     // for deletion, cut the link.
-    if (!self.next_idx.compare_exchange_strong(self_val_observed, next_val_observed)) {
+    if (!self.next_idx.compare_exchange_strong(self_val_observed, next_val_observed & ~kDeleted)) {
       // If anything to the node has changed, it's no longer eligible for severing.
       return false;
     }
     // Save the latest snapshot of the observed link.
-    self_val_observed = next_val_observed;
+    self_val_observed = next_val_observed & ~kDeleted;
 
     // Now that the `next` is severed, the actor needs to make sure the visit counters are in sync.
     // Replace the pointer part of the `next`'s link, while observing changes to its tag (if any).
-    next.replace_pointer(next_val_observed, get_idx(self));
+    next_val_observed = next.replace_pointer(next_val_observed, get_idx(self));
 
     // The only part of the value of the node marked as deleted (`next`) that can change is the
     // visitor counter.

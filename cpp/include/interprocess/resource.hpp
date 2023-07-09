@@ -95,13 +95,12 @@ struct resource_t {
   using index_t = std::size_t;
 
   constexpr static inline index_t kTagBits = 4 + sizeof(void*);
-  constexpr static inline index_t kTagMask = ((index_t{1} << kTagBits) - 1)
-                                             << (std::numeric_limits<index_t>::digits - kTagBits);
+  constexpr static inline index_t kTagShift = std::numeric_limits<index_t>::digits - kTagBits;
+  constexpr static inline index_t kTagMask = ((index_t{1} << kTagBits) - 1) << kTagShift;
   /** Maximum size of the list. */
   constexpr static inline index_t kPtrMask = ~kTagMask;
   /** Pointer tag bits saying that the node is being removed. */
-  constexpr static inline index_t kDeleted = index_t{1}
-                                             << (std::numeric_limits<index_t>::digits - kTagBits);
+  constexpr static inline index_t kDeleted = index_t{1} << kTagShift;
   /** The rest of the bits are used for visit counter. */
   constexpr static inline index_t kVisited = kDeleted << 1;
   /** All bits that belong to visitor counter. */
@@ -460,6 +459,7 @@ struct resource_t {
    * @return whether insertion was successful
    */
   inline auto try_insert_at(node_t& self, index_t& self_val_observed, node_t& node) -> bool {
+    assert((self_val_observed & kVisitMask) > 0);
     index_t next_idx_orig = self_val_observed & kPtrMask;
     while (true) {
       if (is_deleted(self_val_observed)) {

@@ -480,7 +480,9 @@ struct resource_t {
         }
       }
       // Try to insert the node
-      node.next_idx.store(self_val_observed);
+      // Copy both the visitors except the current actor - it does not enter the inserted node,
+      // as he knows the newest value of `self` already.
+      node.next_idx.store(self_val_observed - kVisited);
       auto self_val_desired = (self_val_observed & kVisitMask) | get_idx(node);
       if (self.next_idx.compare_exchange_weak(self_val_observed, self_val_desired)) {
         // Successfully inserted the node!

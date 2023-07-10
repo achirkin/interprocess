@@ -247,15 +247,17 @@ struct resource_t {
   /**
    * Decrement `self`'s visitor counter, possibly take ownership of one or more nodes.
    * The node must be visited via its `next_idx` counter.
+   *
+   * @param just_severed try to own the node even if the `self` value hasn't changed
    */
-  inline void leave(node_t& self, index_t& self_val_observed) {
+  inline void leave(node_t& self, index_t& self_val_observed, bool just_severed = false) {
     assert((self_val_observed & kVisitMask) > 0);
     auto self_ref_orig = self_val_observed & kPtrMask;
     self_val_observed = self.next_idx.fetch_sub(kVisited) - kVisited;
 
     bool ref_changed = (self_val_observed & kPtrMask) != self_ref_orig;
     bool last_in_deleted = (self_val_observed & kTagMask) == kDeleted;
-    if (last_in_deleted && ref_changed) {
+    if (last_in_deleted && (ref_changed || just_severed)) {
       // 1. self is deleted
       // 2. this actor is the last visitor
       // 3. reference to next is changed
@@ -370,7 +372,7 @@ struct resource_t {
 
         // Try to cut off the `next` if it's marked deleted
         if (try_sever(*self, self_val_observed, *next, next_val_observed)) {
-          leave(*next, next_val_observed);
+          leave(*next, next_val_observed, true);
           continue;
         }
       }
@@ -407,7 +409,7 @@ struct resource_t {
       auto next_val_observed = enter(*next);
       // Try to cut off the `next` if it's marked deleted
       if (try_sever(*self, self_val_observed, *next, next_val_observed)) {
-        leave(*next, next_val_observed);
+        leave(*next, next_val_observed, true);
         continue;
       }
       // Actor looks for the first non-deleted node to compare against.

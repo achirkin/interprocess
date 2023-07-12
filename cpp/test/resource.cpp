@@ -8,6 +8,15 @@
 #include <tuple>
 #include <vector>
 
+template <typename F>
+struct print_stream {
+  F f;
+  print_stream(F&& f) : f(std::forward<F>(f)) {}
+  friend auto operator<<(std::ostream& out, const print_stream& v) -> std::ostream& {
+    return v.f(out);
+  }
+};
+
 namespace interprocess {
 template <typename T>
 struct inspect_resource_t {
@@ -16,13 +25,6 @@ struct inspect_resource_t {
   resource_t<T>& res;
 
   inspect_resource_t(resource_t<T>& res) : res(res) {}
-
-  static std::ostream& view_node(std::ostream& out, const node_t& node) {
-    auto val = node.next_idx.load();
-    auto tag = (val & resource_t<T>::kTagMask) >> resource_t<T>::kTagShift;
-    auto idx = (val & resource_t<T>::kPtrMask);
-    return out << "{" << (tag >> 1) << "|" << (tag & 1) << "|" << idx << "; " << node.size << "}";
-  }
 
   template <typename View>
   void visit_nodes(index_t root_idx, View view) {
@@ -39,35 +41,61 @@ struct inspect_resource_t {
     }
   }
 
-  void debug_view(index_t root_idx) {
-    visit_nodes(root_idx, [](const auto& node, index_t ix, bool first) {
-      if (first) {
-        std::cout << ix << ": ";
-        view_node(std::cout, node);
-      } else {
-        std::cout << " -> ";
-        view_node(std::cout, node);
-      }
-    });
-    std::cout << std::endl;
+  static auto view_node(const node_t& node) {
+    return print_stream{[&node](std::ostream& out) -> std::ostream& {
+      auto val = node.next_idx.load();
+      auto tag = (val & resource_t<T>::kTagMask) >> resource_t<T>::kTagShift;
+      auto idx = (val & resource_t<T>::kPtrMask);
+      return out << "{" << (tag >> 1) << "|" << (tag & 1) << "|" << idx << "; " << node.size << "}";
+    }};
   }
 
-  void debug_view_shared() {
-    std::cout << "resource.shared: ";
-    debug_view(resource_t<T>::kRoot);
+  auto view_chain(index_t root_idx) {
+    return print_stream{[&, root_idx](std::ostream& out) -> std::ostream& {
+      visit_nodes(root_idx, [&out](const auto& node, index_t ix, bool first) {
+        if (first) {
+          out << ix << ": " << view_node(node);
+        } else {
+          out << " -> " << view_node(node);
+        }
+      });
+      return out;
+    }};
   }
 
-  void debug_view_local() {
-    std::cout << "resource.local: ";
-    debug_view(res.owned_nodes_);
+  auto view_shared() {
+    return print_stream{[&](std::ostream& out) -> std::ostream& {
+      return out << "resource.shared: " << view_chain(resource_t<T>::kRoot);
+    }};
+  }
+  auto view_local() {
+    return print_stream{[&](std::ostream& out) -> std::ostream& {
+      return out << "resource.local: " << view_chain(res.owned_nodes_);
+    }};
+  }
+  auto view_all() {
+    return print_stream{[&](std::ostream& out) -> std::ostream& {
+      return out << "Current state:" << std::endl
+                 << "\t" << view_shared() << std::endl
+                 << "\t" << view_local() << std::endl;
+    }};
   }
 
-  index_t count_visits() {
+  auto count_visits() {
     index_t counter = 0;
     visit_nodes(resource_t<T>::kRoot, [&counter](const auto& node, index_t, bool) {
       counter += (node.next_idx.load() & resource_t<T>::kTagMask) >> resource_t<T>::kTagShift;
     });
     return counter;
+  }
+
+  void check_visit_leaks() { EXPECT_EQ(count_visits(), 0) << view_shared(); }
+
+  void check_memory_leaks() {
+    index_t total_size = 2;  // root and terminal nodes
+    visit_nodes(resource_t<T>::kRoot,
+                [&total_size](const auto& node, index_t, bool) { total_size += node.size; });
+    EXPECT_EQ(total_size, res.get(resource_t<T>::kTerminal)->next_idx.load()) << view_all();
   }
 };
 
@@ -80,48 +108,46 @@ struct chunk_t {
   int64_t b;
 };
 
-TEST(resource, basic_alloc_loop) {
+TEST(resource, basic_alloc_loop) /* NOLINT */ {
   auto res = interprocess::resource_t<chunk_t>::create();
   auto inspect = interprocess::inspect_resource_t{res};
   std::vector<std::tuple<chunk_t*, size_t>> allocs{kSmallN};
   for (size_t i = 0; i < kSmallN; i++) {
-    size_t elems = 10 + i;
+    size_t elems = 10 + i;  // NOLINT
     auto* ptr = res.allocate(elems);
     allocs[i] = std::make_tuple(ptr, elems);
     for (size_t j = 0; j < elems; j++) {
       ptr[j].a = double(i);
       ptr[j].b = -int64_t(i);
     }
-    EXPECT_EQ(inspect.count_visits(), 0);
+    inspect.check_visit_leaks();
   }
-  inspect.debug_view_shared();
-  inspect.debug_view_local();
   for (size_t i = 0; i < kSmallN; i++) {
     auto [ptr, elems] = allocs[i];
     for (size_t j = 0; j < elems; j++) {
       EXPECT_EQ(ptr[j].a, double(i));
       EXPECT_EQ(ptr[j].b, -int64_t(i));
     }
-    EXPECT_EQ(inspect.count_visits(), 0);
+    res.deallocate(ptr, elems);
+    inspect.check_visit_leaks();
   }
-  inspect.debug_view_shared();
-  inspect.debug_view_local();
+  inspect.check_memory_leaks();
 }
 
-TEST(resource, basic_alloc_interleaved_a) {
+TEST(resource, basic_alloc_interleaved_a) /* NOLINT */ {
   auto res = interprocess::resource_t<chunk_t>::create();
   auto inspect = interprocess::inspect_resource_t{res};
   std::vector<std::tuple<chunk_t*, size_t>> allocs{kSmallN};
   for (size_t i = 0; i <= kSmallN; i++) {
     if (i < kSmallN) {
-      size_t elems = 10 + i;
+      size_t elems = 10 + i;  // NOLINT
       auto* ptr = res.allocate(elems);
       allocs[i] = std::make_tuple(ptr, elems);
       for (size_t j = 0; j < elems; j++) {
         ptr[j].a = double(i);
         ptr[j].b = -int64_t(i);
       }
-      EXPECT_EQ(inspect.count_visits(), 0);
+      inspect.check_visit_leaks();
     }
     if (i > 0) {
       auto [ptr, elems] = allocs[i - 1];
@@ -131,13 +157,12 @@ TEST(resource, basic_alloc_interleaved_a) {
       }
       res.deallocate(ptr, elems);
     }
-    EXPECT_EQ(inspect.count_visits(), 0);
+    inspect.check_visit_leaks();
   }
-  inspect.debug_view_shared();
-  inspect.debug_view_local();
+  inspect.check_memory_leaks();
 }
 
-TEST(resource, basic_alloc_interleaved_b) {
+TEST(resource, basic_alloc_interleaved_b) /* NOLINT */ {
   auto res = interprocess::resource_t<chunk_t>::create();
   auto inspect = interprocess::inspect_resource_t{res};
   std::vector<std::tuple<chunk_t*, size_t>> allocs{kSmallN};
@@ -151,7 +176,7 @@ TEST(resource, basic_alloc_interleaved_b) {
         ptr[j].b = -int64_t(i);
       }
     }
-    EXPECT_EQ(inspect.count_visits(), 0);
+    inspect.check_visit_leaks();
     if (i > 0) {
       auto [ptr, elems] = allocs[i - 1];
       for (size_t j = 0; j < elems; j++) {
@@ -160,8 +185,7 @@ TEST(resource, basic_alloc_interleaved_b) {
       }
       res.deallocate(ptr, elems);
     }
-    EXPECT_EQ(inspect.count_visits(), 0);
+    inspect.check_visit_leaks();
   }
-  inspect.debug_view_shared();
-  inspect.debug_view_local();
+  inspect.check_memory_leaks();
 }

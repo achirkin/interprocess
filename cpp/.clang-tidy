@@ -1,6 +1,6 @@
 Checks:          'clang-analyzer-*,cppcoreguidelines-*,readability-*,portability-*,bugprone-*,performance-*,modernize-*,-cppcoreguidelines-pro-bounds-*,-cppcoreguidelines-pro-type-*-cast,-readability-else-after-return,-cppcoreguidelines-owning-memory'
 WarningsAsErrors: ''
-HeaderFilterRegex: '.*'
+HeaderFilterRegex: 'cpp/(include|src|test).*$'
 AnalyzeTemporaryDtors: false
 FormatStyle:     none
 CheckOptions:

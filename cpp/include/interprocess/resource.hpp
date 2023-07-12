@@ -502,6 +502,11 @@ struct resource_t {
       insert(node);
     }
   }
+
+#ifdef INTERPROCESS_STRUCT_INSPECT
+  template <typename>
+  friend class inspect_resource_t;
+#endif
 };
 
 }  // namespace interprocess

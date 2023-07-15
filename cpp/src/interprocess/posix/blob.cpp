@@ -26,7 +26,7 @@ struct blob_state_t {
   /** Counts the number of users of the shared blob; starts with one user. */
   std::atomic<std::int32_t> users{1};
 
-  static_assert(decltype(data_size)::is_always_lock_free&& decltype(users)::is_always_lock_free,
+  static_assert(decltype(data_size)::is_always_lock_free && decltype(users)::is_always_lock_free,
                 "These atomics should be lock-free for IPC.");
 };
 static_assert(std::is_trivially_destructible_v<blob_state_t>,

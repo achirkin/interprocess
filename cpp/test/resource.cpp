@@ -5,6 +5,8 @@
 #include <gtest/gtest.h>
 
 #include <iostream>
+#include <random>
+#include <thread>
 #include <tuple>
 #include <vector>
 
@@ -78,6 +80,20 @@ struct inspect_resource_t {
       return out << "Current state:" << std::endl
                  << "\t" << view_shared() << std::endl
                  << "\t" << view_local() << std::endl;
+    }};
+  }
+  auto view_sizes() {
+    return print_stream{[&](std::ostream& out) -> std::ostream& {
+      EXPECT_LE(res.size_ * sizeof(T), res.blob_.grow(0));
+      return out << "blob: " << res.blob_.grow(0) << "; size: " << res.size_ << " * " << sizeof(T);
+    }};
+  }
+  template <typename S>
+  auto view_ptr(const S* ptr) {
+    return print_stream{[&, ptr](std::ostream& out) -> std::ostream& {
+      auto offset = reinterpret_cast<const std::byte*>(ptr) -
+                    reinterpret_cast<const std::byte*>(res.blob_.data());
+      return out << "ptr: " << ptr << "; offset: " << offset << "; ix: " << (offset / sizeof(T));
     }};
   }
 
@@ -187,5 +203,120 @@ TEST(resource, basic_alloc_interleaved_b) /* NOLINT */ {
     }
     inspect.check_visit_leaks();
   }
+  inspect.check_memory_leaks();
+}
+
+template <bool RuntimeChecks>
+void random_interleaved_allocs(interprocess::resource_t<chunk_t> res, uint32_t seed, size_t len,
+                               size_t overlap_len) {
+  auto inspect = interprocess::inspect_resource_t{res};
+  std::default_random_engine engine(seed);
+  std::negative_binomial_distribution<std::size_t> rng(10, 0.7);
+  std::vector<std::tuple<chunk_t*, size_t>> allocs{overlap_len};
+  for (size_t i = 0; i < len + overlap_len; i++) {
+    if (i >= overlap_len) {
+      auto [ptr, elems] = allocs[i % overlap_len];
+      for (size_t j = 0; j < elems; j++) {
+        EXPECT_EQ(ptr[j].a, double(i + j - overlap_len)) << inspect.view_ptr(ptr + j);
+        EXPECT_EQ(ptr[j].b, -int64_t(i + j - overlap_len)) << inspect.view_ptr(ptr + j);
+      }
+      res.deallocate(ptr, elems);
+    }
+    if constexpr (RuntimeChecks) {
+      inspect.check_visit_leaks();
+    }
+    if (i < len) {
+      size_t elems = rng(engine);
+      auto* ptr = res.allocate(elems);
+      allocs[i % overlap_len] = std::make_tuple(ptr, elems);
+      for (size_t j = 0; j < elems; j++) {
+        ptr[j].a = double(i + j);
+        ptr[j].b = -int64_t(i + j);
+      }
+    }
+    if constexpr (RuntimeChecks) {
+      inspect.check_visit_leaks();
+    }
+  }
+  if constexpr (RuntimeChecks) {
+    inspect.check_memory_leaks();
+  }
+}
+
+TEST(resource, random_alloc_singlethreaded) /* NOLINT */ {
+  auto res = interprocess::resource_t<chunk_t>::create();
+  random_interleaved_allocs<true>(res, 42, 1000, 100);
+}
+
+void random_alloc_vector(interprocess::resource_t<chunk_t> res, uint32_t seed, size_t len,
+                         std::vector<std::tuple<chunk_t*, size_t>>* allocs) {
+  std::default_random_engine engine(seed);
+  std::negative_binomial_distribution<std::size_t> rng(10, 0.7);
+  (*allocs) = std::vector<std::tuple<chunk_t*, size_t>>{len};
+  for (size_t i = 0; i < len; i++) {
+    size_t elems = rng(engine);
+    auto* ptr = res.allocate(elems);
+    (*allocs)[i] = std::make_tuple(ptr, elems);
+    for (size_t j = 0; j < elems; j++) {
+      ptr[j].a = double(i + j);
+      ptr[j].b = -int64_t(i + j);
+    }
+  }
+}
+
+auto dealloc_check_vector(interprocess::resource_t<chunk_t> res,
+                          std::vector<std::tuple<chunk_t*, size_t>>* allocs) {
+  auto inspect = interprocess::inspect_resource_t{res};
+  for (size_t i = 0; i < allocs->size(); i++) {
+    auto [ptr, elems] = (*allocs)[i];
+    for (size_t j = 0; j < elems; j++) {
+      EXPECT_EQ(ptr[j].a, double(i + j)) << inspect.view_ptr(ptr + j);
+      EXPECT_EQ(ptr[j].b, -int64_t(i + j)) << inspect.view_ptr(ptr + j);
+    }
+    res.deallocate(ptr, elems);
+  }
+}
+
+TEST(resource, random_alloc_batched_multithreaded) /* NOLINT */ {
+  auto res = interprocess::resource_t<chunk_t>::create();
+  auto inspect = interprocess::inspect_resource_t{res};
+  constexpr size_t kThreads = 5;
+  std::seed_seq s;
+  std::vector<std::uint32_t> seeds{kThreads};
+  std::vector<std::thread> threads{kThreads};
+  std::vector<std::vector<std::tuple<chunk_t*, size_t>>> allocs{kThreads};
+  s.generate(seeds.begin(), seeds.end());
+  for (size_t i = 0; i < kThreads; i++) {
+    threads[i] = std::thread(random_alloc_vector, res, seeds[i], 100, &allocs[i]);
+  }
+  for (auto& thread : threads) {
+    thread.join();
+  }
+  inspect.check_visit_leaks();
+  for (size_t i = 0; i < kThreads; i++) {
+    threads[i] = std::thread(dealloc_check_vector, res, &allocs[i]);
+  }
+  for (auto& thread : threads) {
+    thread.join();
+  }
+  inspect.check_visit_leaks();
+  inspect.check_memory_leaks();
+}
+
+TEST(resource, random_alloc_interleaved_multithreaded) /* NOLINT */ {
+  auto res = interprocess::resource_t<chunk_t>::create();
+  constexpr size_t kThreads = 2;
+  std::seed_seq s;
+  std::vector<std::uint32_t> seeds{kThreads};
+  std::vector<std::thread> threads{kThreads};
+  s.generate(seeds.begin(), seeds.end());
+  for (size_t i = 0; i < kThreads; i++) {
+    threads[i] = std::thread(random_interleaved_allocs<false>, res, seeds[i], 20, 5);
+  }
+  for (auto& thread : threads) {
+    thread.join();
+  }
+  auto inspect = interprocess::inspect_resource_t{res};
+  inspect.check_visit_leaks();
   inspect.check_memory_leaks();
 }

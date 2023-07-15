@@ -15,6 +15,15 @@ namespace interprocess {
 template <typename T>
 struct resource_t {
  public:
+  inline resource_t() noexcept = delete;
+  inline resource_t(const resource_t& other) noexcept : blob_{other.blob_} {};
+  inline auto operator=(const resource_t& other) noexcept -> resource_t& {
+    return *this = resource_t{other};
+  }
+  inline resource_t(resource_t&& other) noexcept = default;
+  inline auto operator=(resource_t&& other) noexcept -> resource_t& = default;
+  inline ~resource_t() noexcept = default;
+
   /** Create a new shared memory resource. */
   static inline auto create(std::optional<std::size_t> max_size = std::nullopt,
                             const shared_object_name_t& name = {}) noexcept -> resource_t {

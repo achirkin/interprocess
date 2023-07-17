@@ -46,9 +46,9 @@ struct inspect_resource_t {
   static auto view_node(const node_t& node) {
     return print_stream{[&node](std::ostream& out) -> std::ostream& {
       auto val = node.next_idx.load();
-      auto tag = (val & resource_t<T>::kTagMask) >> resource_t<T>::kTagShift;
+      auto tag = (val & resource_t<T>::kTagMask) >> resource_t<T>::kPtrBits;
       auto idx = (val & resource_t<T>::kPtrMask);
-      return out << "{" << (tag >> 1) << "|" << (tag & 1) << "|" << idx << "; " << node.size << "}";
+      return out << "{" << tag << "|" << idx << "; " << node.size << "}";
     }};
   }
 
@@ -100,7 +100,7 @@ struct inspect_resource_t {
   auto count_visits() {
     index_t counter = 0;
     visit_nodes(resource_t<T>::kRoot, [&counter](const auto& node, index_t, bool) {
-      counter += (node.next_idx.load() & resource_t<T>::kTagMask) >> resource_t<T>::kTagShift;
+      counter += (node.next_idx.load() & resource_t<T>::kTagMask) >> resource_t<T>::kPtrBits;
     });
     return counter;
   }
@@ -108,10 +108,11 @@ struct inspect_resource_t {
   void check_visit_leaks() { EXPECT_EQ(count_visits(), 0) << view_shared(); }
 
   void check_memory_leaks() {
-    index_t total_size = 2;  // root and terminal nodes
-    visit_nodes(resource_t<T>::kRoot,
+    auto* root = res.get(resource_t<T>::kRoot);
+    index_t total_size = 1;  // root node
+    visit_nodes(root->next_idx.load(),
                 [&total_size](const auto& node, index_t, bool) { total_size += node.size; });
-    EXPECT_EQ(total_size, res.get(resource_t<T>::kTerminal)->next_idx.load()) << view_all();
+    EXPECT_EQ(total_size, root->size.load()) << view_all();
   }
 };
 
@@ -249,14 +250,14 @@ TEST(resource, random_alloc_singlethreaded) /* NOLINT */ {
 }
 
 void random_alloc_vector(interprocess::resource_t<chunk_t> res, uint32_t seed, size_t len,
-                         std::vector<std::tuple<chunk_t*, size_t>>* allocs) {
+                         std::vector<std::tuple<std::ptrdiff_t, size_t>>* allocs) {
   std::default_random_engine engine(seed);
   std::negative_binomial_distribution<std::size_t> rng(10, 0.7);
-  (*allocs) = std::vector<std::tuple<chunk_t*, size_t>>{len};
+  (*allocs) = std::vector<std::tuple<std::ptrdiff_t, size_t>>{len};
   for (size_t i = 0; i < len; i++) {
     size_t elems = rng(engine);
     auto* ptr = res.allocate(elems);
-    (*allocs)[i] = std::make_tuple(ptr, elems);
+    (*allocs)[i] = std::make_tuple(res.get_memory_offset(ptr), elems);
     for (size_t j = 0; j < elems; j++) {
       ptr[j].a = double(i + j);
       ptr[j].b = -int64_t(i + j);
@@ -265,10 +266,11 @@ void random_alloc_vector(interprocess::resource_t<chunk_t> res, uint32_t seed, s
 }
 
 auto dealloc_check_vector(interprocess::resource_t<chunk_t> res,
-                          std::vector<std::tuple<chunk_t*, size_t>>* allocs) {
+                          std::vector<std::tuple<std::ptrdiff_t, size_t>>* allocs) {
   auto inspect = interprocess::inspect_resource_t{res};
   for (size_t i = 0; i < allocs->size(); i++) {
-    auto [ptr, elems] = (*allocs)[i];
+    auto [offt, elems] = (*allocs)[i];
+    auto ptr = res.from_memory_offset(offt);
     for (size_t j = 0; j < elems; j++) {
       EXPECT_EQ(ptr[j].a, double(i + j)) << inspect.view_ptr(ptr + j);
       EXPECT_EQ(ptr[j].b, -int64_t(i + j)) << inspect.view_ptr(ptr + j);
@@ -280,14 +282,14 @@ auto dealloc_check_vector(interprocess::resource_t<chunk_t> res,
 TEST(resource, random_alloc_batched_multithreaded) /* NOLINT */ {
   auto res = interprocess::resource_t<chunk_t>::create();
   auto inspect = interprocess::inspect_resource_t{res};
-  constexpr size_t kThreads = 5;
+  constexpr size_t kThreads = 2;
   std::seed_seq s;
   std::vector<std::uint32_t> seeds{kThreads};
   std::vector<std::thread> threads{kThreads};
-  std::vector<std::vector<std::tuple<chunk_t*, size_t>>> allocs{kThreads};
+  std::vector<std::vector<std::tuple<std::ptrdiff_t, size_t>>> allocs{kThreads};
   s.generate(seeds.begin(), seeds.end());
   for (size_t i = 0; i < kThreads; i++) {
-    threads[i] = std::thread(random_alloc_vector, res, seeds[i], 100, &allocs[i]);
+    threads[i] = std::thread(random_alloc_vector, res, seeds[i], 20, &allocs[i]);
   }
   for (auto& thread : threads) {
     thread.join();

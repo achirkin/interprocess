@@ -1,3 +1,5 @@
+#pragma once
+
 #include <interprocess/blob.hpp>
 #include <interprocess/common.hpp>
 
@@ -7,8 +9,6 @@
 #include <limits>
 #include <new>
 #include <optional>
-
-#pragma once
 
 namespace interprocess {
 
@@ -27,10 +27,9 @@ struct resource_t {
   /** Create a new shared memory resource. */
   static inline auto create(std::optional<std::size_t> max_size = std::nullopt,
                             const shared_object_name_t& name = {}) noexcept -> resource_t {
-    auto initial_size = std::max(kRoot, kTerminal) + 1;
-    auto r = resource_t{blob_t::create(sizeof(T) * initial_size, max_size, name)};
-    new (r.head_ + kRoot) node_t{kTerminal, 0};
-    new (r.head_ + kTerminal) node_t{initial_size, kPtrMask};
+    auto initial_size = kRoot + 1;
+    auto r = resource_t{blob_t::create(sizeof(node_t) * initial_size, max_size, name)};
+    new (r.head_ + kRoot) node_t{kTerminal, initial_size};
     return r;
   }
 
@@ -45,9 +44,9 @@ struct resource_t {
       return nullptr;
     }
     auto* ptr = pop_first(size);
-    if (ptr != nullptr && ptr->size > size) {
-      auto node_idx = get_idx(*ptr) + size;
-      auto& leftover = create(node_idx, ptr->size - size);
+    if (ptr != nullptr && ptr->size.load() > size) {
+      auto node_idx = get_idx(ptr) + size;
+      auto& leftover = create(node_idx, ptr->size.load() - size);
       insert(leftover);
     }
     cleanup();
@@ -68,16 +67,16 @@ struct resource_t {
       return ptr;
     }
     if (old_size > new_size) {
-      auto node_idx = get_idx(*ptr) + new_size;
+      auto node_idx = get_idx(ptr) + new_size;
       auto& leftover = create(node_idx, old_size - new_size);
       insert(leftover);
       cleanup();
       return ptr;
     }
     auto* new_ptr = pop_first(new_size);
-    if (new_ptr != nullptr && ptr->size > new_size) {
-      auto node_idx = get_idx(*ptr) + new_size;
-      auto& leftover = create(node_idx, ptr->size - new_size);
+    if (new_ptr != nullptr && ptr->size.load() > new_size) {
+      auto node_idx = get_idx(ptr) + new_size;
+      auto& leftover = create(node_idx, ptr->size.load() - new_size);
       insert(leftover);
       memcpy(new_ptr, ptr, sizeof(T) * new_size);
       node_idx = index_t(reinterpret_cast<const node_t*>(ptr) - head_);
@@ -100,72 +99,44 @@ struct resource_t {
                            reinterpret_cast<const void*>(ptr), size, owned_nodes_);
   }
 
+  /** Return an offset of this pointer w.r.t, to the shared memory area. */
+  [[nodiscard]] auto get_memory_offset(const T* ptr) const -> std::ptrdiff_t {
+    return ptr - reinterpret_cast<T*>(head_);
+  }
+
+  /** Return an offset of this pointer w.r.t, to the shared memory area. */
+  [[nodiscard]] auto from_memory_offset(std::ptrdiff_t diff) const -> T* {
+    return reinterpret_cast<T*>(head_) + diff;
+  }
+
  private:
   using index_t = std::size_t;
 
   constexpr static inline index_t kTagBits = 4 + sizeof(void*);
-  constexpr static inline index_t kTagShift = std::numeric_limits<index_t>::digits - kTagBits;
-  constexpr static inline index_t kTagMask = ((index_t{1} << kTagBits) - 1) << kTagShift;
+  constexpr static inline index_t kPtrBits = std::numeric_limits<index_t>::digits - kTagBits;
+  constexpr static inline index_t kTagMask = ((index_t{1} << kTagBits) - 1) << kPtrBits;
   /** Maximum size of the list. */
   constexpr static inline index_t kPtrMask = ~kTagMask;
-  /** Pointer tag bits saying that the node is being removed. */
-  constexpr static inline index_t kDeleted = index_t{1} << kTagShift;
   /** The rest of the bits are used for visit counter. */
-  constexpr static inline index_t kVisited = kDeleted << 1;
-  /** All bits that belong to visitor counter. */
-  constexpr static inline index_t kVisitMask = kTagMask & (~kDeleted);
+  constexpr static inline index_t kVisited = index_t{1} << kPtrBits;
   /** Index of the special root node. */
-  constexpr static inline index_t kRoot = 1;
-  /** Index of the special last node. It points to the first element past the allocated area. */
-  constexpr static inline index_t kTerminal = 0;
+  constexpr static inline index_t kRoot = 0;
+  /** Index of the special last node. It does not exist and must never be visited. */
+  constexpr static inline index_t kTerminal = kPtrMask;
 
   /*
     All currently available memory is stored in the linked list as defined by node_t.
-    All nodes are ordered the size, ties are resolved by the index.
-    [Ordering invariants]
-      - Root node is always first (zero size).
-      - There always exists the last node;
-        for convenience it's linked to the root; only one element of it is actually allocated.
+    All nodes are ordered by their index/pointer.
 
     The next_idx is the core of the linked list. Besides the index of the next node, it
-    packs a tag that contains the deletion mark and the visitor counter. The deletion mark tells
-    whether the connection to this from the previous node should be severed. The visitor counter
+    packs a tag that contains the visitor counter. The visitor counter
     protects an unreachable (w.r.t. kRoot) node from being owned by an actor (and thus trashed).
-    [Invariants]
-      1. A visited node or it's next both cannot be trashed.
-      2. The `next_idx` pointer part cannot be changed on a node marked for deletion.
-
-    [Notes]
-    Inv.2 to restricts the insertion and severing:
-      - The severing of a chain of deleted nodes must be done in the order of their appearance
-        (TBD: all at once? hard to track visits then)
-      - The insertion must happen in front of the node, not behind. This also implies the order
-        is broken in a deleted section of the list.
+    [Invariant]
+      - A connection between a visited node and its next cannot be severed.
    */
   struct alignas(sizeof(T)) node_t {
     std::atomic<index_t> next_idx;
-    index_t size;
-
-    // There is a strict order of node_t given by a lexicographic comparison of (size, addressof).
-    // This also implies a node_t can only ever be equal to itself.
-    friend constexpr inline auto operator==(const node_t& l, const node_t& r) noexcept -> bool {
-      return &l == &r;
-    }
-    friend constexpr inline auto operator!=(const node_t& l, const node_t& r) noexcept -> bool {
-      return &l != &r;
-    }
-    friend constexpr inline auto operator<=(const node_t& l, const node_t& r) noexcept -> bool {
-      return (l.size == r.size) ? &l <= &r : l.size < r.size;
-    }
-    friend constexpr inline auto operator>=(const node_t& l, const node_t& r) noexcept -> bool {
-      return (l.size == r.size) ? &l >= &r : l.size > r.size;
-    }
-    friend constexpr inline auto operator<(const node_t& l, const node_t& r) noexcept -> bool {
-      return (l.size == r.size) ? &l < &r : l.size < r.size;
-    }
-    friend constexpr inline auto operator>(const node_t& l, const node_t& r) noexcept -> bool {
-      return (l.size == r.size) ? &l > &r : l.size > r.size;
-    }
+    std::atomic<index_t> size;
 
     /**
      * Replace the pointer part of the `next_idx` and capture its latest previous state.
@@ -177,13 +148,6 @@ struct resource_t {
         val_new = (val_observed & kTagMask) | (val_new & kPtrMask);
       } while (!next_idx.compare_exchange_weak(val_observed, val_new));
       return val_new;
-    }
-
-    /** Set the deletion mark and get the new observed state. */
-    inline void mark_delete(index_t& val_observed) {
-      while (!next_idx.compare_exchange_weak(val_observed, val_observed | kDeleted)) {
-      }
-      val_observed |= kDeleted;
     }
   };
 
@@ -210,10 +174,8 @@ struct resource_t {
     return head_ + ix;
   }
 
-  [[nodiscard]] inline auto is_deleted(index_t i) const -> bool { return (i & kDeleted) != 0; }
-
-  [[nodiscard]] inline auto get_idx(const node_t& node) const -> index_t {
-    return index_t(&node - head_);
+  [[nodiscard]] inline auto get_idx(const node_t* node) const -> index_t {
+    return index_t(node - head_);
   }
 
   /** Inits the node in the memory; sets everything except next_idx. */
@@ -229,7 +191,7 @@ struct resource_t {
     while (left_idx != kTerminal && right_idx != kTerminal) {
       node_t* left = get(left_idx);
       node_t* right = get(right_idx);
-      if (*left < *right) {
+      if (left < right) {
         tail->next_idx.store(left_idx);
         tail = left;
         left_idx = left->next_idx.load();
@@ -248,82 +210,72 @@ struct resource_t {
     return fake_root.next_idx.load();
   }
 
-  /** Try to increment `self`'s visitor counter and return its state. */
-  inline auto enter(node_t& self) -> index_t {
-    return self.next_idx.fetch_add(kVisited) + kVisited;
+  /** Try to increment `self`'s visitor counter and return its new state. */
+  inline auto enter(node_t* self) -> index_t {
+    return self->next_idx.fetch_add(kVisited) + kVisited;
   }
 
   /**
-   * Decrement `self`'s visitor counter, possibly take ownership of one or more nodes.
-   * The node must be visited via its `next_idx` counter.
-   *
-   * @param just_severed try to own the node even if the `self` value hasn't changed
+   * Decrement `self`'s visitor counter, possibly take ownership of the node (saved in
+   * `owned_nodes_`). The node must be visited via its `next_idx` counter.
    */
-  inline void leave(node_t& self, index_t& self_val_observed, bool just_severed = false) {
-    assert((self_val_observed & kVisitMask) > 0);
-    auto self_ref_orig = self_val_observed & kPtrMask;
-    self_val_observed = self.next_idx.fetch_sub(kVisited) - kVisited;
-
-    bool ref_changed = (self_val_observed & kPtrMask) != self_ref_orig;
-    bool last_in_deleted = (self_val_observed & kTagMask) == kDeleted;
-    if (last_in_deleted && (ref_changed || just_severed)) {
-      // 1. self is deleted
-      // 2. this actor is the last visitor
-      // 3. reference to next is changed
-      //    => the actor owns the node
-      self.next_idx.store(kTerminal);
-      owned_nodes_ = unsafe_merge(owned_nodes_, get_idx(self));
-    }
-
-    if (ref_changed) {
-      // Whether a node was inserted or severed, the visitor counter has been copied;
-      // we need to leave that node as well.
-      // Potentially, this could repeat multiple times.
-      auto& next = *get(self_val_observed);
-      auto next_val_observed = next.next_idx.load();
-      return leave(next, next_val_observed);
-    }
-  }
-
-  /**
-   * Try to sever the connection between `self` and `next`.
-   * Both nodes must be entered before the call to this function.
-   *
-   * @return whether severing was successful.
-   */
-  inline auto try_sever(node_t& self, index_t& self_val_observed, node_t& next,
-                        index_t& next_val_observed) -> bool {
+  inline auto leave_one(node_t* self) -> index_t {
     /*
-    [Prerequisites]
-      1. The `next` is marked deleted.
-      2. The `self` is NOT marked deleted.
-      3. This actor is the only visitor registered by `self`.
+    Possible state:
+      a. [most likely] Just decrement the counter; the pointer value does not change.
+         There may or may not be other visitors, none of the actor's concern.
+         No extra action required.
+      b. Another node(s) was inserted after `self`; this is detected by the changed pointer.
+         The pointer is still ordered (ptr > get_idx(self)).
+         CONSEQUENCE: the actor is automatically visiting the inserted node.
+      c. `self` was deleted, but there are other actors in the node; this is detected by
+         the pointer being equal to `kRoot`.
+         No extra action required.
+      d. `self` was deleted, and the actor is the last one to visit it; detected same as (c),
+         plus no visitors
+         CONSEQUENCE: the actor adds the node to `owned_nodes_`.
+      e. Upon a dummy (nullptr) node, the actor does nothing and returns kTerminal.
+
+    Not possible states:
+      - The node given by `self_val_observed` cannot be deleted, even if multiple nodes were
+        inserted in between, because no node can be deleted if there are any visitors to its
+        predecessor.
     */
-    if (!is_deleted(next_val_observed)) {
-      return false;
+    if (self == nullptr) {
+      return kTerminal;  // (e) Shortcut for dummy nodes
     }
-    if (self_val_observed != (get_idx(next) | kVisited)) {
-      return false;
+    auto self_val_observed = self->next_idx.fetch_sub(kVisited);
+    assert((self_val_observed & kTagMask) > 0);
+    self_val_observed -= kVisited;
+    auto ptr_observed = self_val_observed & kPtrMask;
+    auto tag_observed = self_val_observed & kTagMask;
+    if (ptr_observed == kRoot) {
+      if (tag_observed == 0) {
+        // (d). The node was deleted and this actor is the last visitor. Own it.
+        self->next_idx.store(kTerminal);
+        owned_nodes_ = unsafe_merge(owned_nodes_, get_idx(self));
+      }
+      return kTerminal | tag_observed;
     }
-    // Assuming the actor is still the only visitor to the severed node (next) and it's still marked
-    // for deletion, cut the link.
-    if (!self.next_idx.compare_exchange_strong(self_val_observed, next_val_observed & ~kDeleted)) {
-      // If anything to the node has changed, it's no longer eligible for severing.
-      return false;
-    }
-    // Save the latest snapshot of the observed link.
-    self_val_observed = next_val_observed & ~kDeleted;
+    return self_val_observed;
+  }
 
-    // Now that the `next` is severed, the actor needs to make sure the visit counters are in sync.
-    // Replace the pointer part of the `next`'s link, while observing changes to its tag (if any).
-    next_val_observed = next.replace_pointer(next_val_observed, get_idx(self));
-
-    // The only part of the value of the node marked as deleted (`next`) that can change is the
-    // visitor counter.
-    auto visit_delta = (self_val_observed & kVisitMask) - (next_val_observed & kVisitMask);
-    self.next_idx.fetch_sub(visit_delta);
-
-    return true;
+  /**
+   * Leave one or more nodes up to the one that points at or beyond the limit.
+   * All of the nodes must be visited via their `next_idx` counters.
+   *
+   * @param self - the first node to leave
+   * @param limit - the first node _not_ to leave
+   *                (does not need to exist, the tag is ignored)
+   */
+  inline void leave(node_t* self, index_t limit) {
+    limit &= kPtrMask;
+    index_t idx = kRoot;
+    do {
+      grow(idx + 1);
+      idx = leave_one(self) & kPtrMask;
+      self = head_ + idx;
+    } while (idx < limit);
   }
 
   inline auto pop_first_local(std::size_t size) -> node_t* {
@@ -331,7 +283,7 @@ struct resource_t {
     auto self_idx = owned_nodes_ & kPtrMask;
     while (self_idx != kTerminal) {
       auto* node = get(self_idx);
-      if (node->size >= size) {
+      if (node->size.load() >= size) {
         if (prev_idx != kRoot) {
           get(prev_idx)->next_idx.store(node->next_idx.load());
         } else {
@@ -348,45 +300,50 @@ struct resource_t {
   /** Get the first node of at least the requested size. */
   inline auto pop_first(std::size_t size) -> node_t* {
     node_t* self = get(kRoot);
-    auto self_val_observed = enter(*self);
+    auto self_val_observed = enter(self);
     node_t* next = nullptr;
     while (true) {
       // Check if the actor has owned a large enough node
       auto* local = pop_first_local(size);
       if (local != nullptr) {
-        leave(*self, self_val_observed);
+        leave(self, self_val_observed);
         return local;
       }
-      next = get(self_val_observed);
       // Special case: the last node
-      //  - It's never marked/deleted
+      //  - It's never deleted
       //  - It points past the last allocated element
       //  - Actors do not need to enter/leave it (the tag is ignored completely)
       if ((self_val_observed & kPtrMask) == kTerminal) {
-        auto new_index = next->next_idx.fetch_add(size);
+        auto new_index = get(kRoot)->size.fetch_add(size);
         grow(new_index + size);
         auto* new_node = new (get(new_index)) node_t{kTerminal, size};
-        leave(*self, self_val_observed);
+        leave(self, self_val_observed);
         return new_node;
       }
       // otherwise, continue to look
-      auto next_val_observed = enter(*next);
-      // If `self` is not marked deleted, the actor can try to pick `next`;
-      // otherwise, don't bother and skip.
-      if (!is_deleted(self_val_observed)) {
-        // Mark next for deletion if `next` is large enough
-        if (size <= next->size) {
-          next->mark_delete(next_val_observed);
-        }
-
-        // Try to cut off the `next` if it's marked deleted
-        if (try_sever(*self, self_val_observed, *next, next_val_observed)) {
-          leave(*next, next_val_observed, true);
+      next = get(self_val_observed);
+      auto next_val_observed = enter(next);
+      // Try to take `next` if:
+      //   1. It's big enough
+      //   2. This actor is the only visitor.
+      if (next->size.load() >= size && (self_val_observed & kTagMask) == kVisited) {
+        auto self_val_expected = self_val_observed;
+        auto self_val_desired = (next_val_observed & kPtrMask) | kVisited;
+        if (self->next_idx.compare_exchange_strong(self_val_expected, self_val_desired)) {
+          self_val_observed = self_val_desired;
+          // Succesfully removed `next`.
+          // If the actor now leaves `next` last, they will own it.
+          // To notify other actors that `next` is deleted, replace its pointer with the root:
+          // the changed, unordered, link means the node has been severed from the list.
+          next->replace_pointer(next_val_observed, kRoot);
+          // Pass the previous state of `next` (just before short-circuited to the root), so that
+          // the actor can leave and own it as usual.
+          leave(next, next_val_observed);
           continue;
         }
       }
       // Go to next node.
-      leave(*self, self_val_observed);
+      leave(self, self_val_observed);
       self = next;
       self_val_observed = next_val_observed;
     }
@@ -394,112 +351,47 @@ struct resource_t {
 
   /** Insert a node. */
   inline void insert(node_t& node) {
-    while (!try_insert(node)) {
-    }
-  }
-
-  /**
-   * A single attempt to insert a node in a list.
-   * This may fail due to concurrent changes in the list.
-   * For example, the actor needs to start over when the node at the insertion point is marked for
-   * deletion.
-   *
-   * @return whether the insertion succeeded
-   */
-  inline auto try_insert(node_t& node) -> bool {
     node_t* self = get(kRoot);
-    auto self_val_observed = enter(*self);
-    node_t* next = nullptr;
-    // In this loop the actor advances over the list trying to insert the node between self and
-    // next, always checking that self is not deleted.
+    node_t* prev = nullptr;
+    auto node_idx = get_idx(&node);
+    auto self_val_observed = enter(self);
+    auto prev_val_observed = kRoot;
     while (true) {
-      assert(!is_deleted(self_val_observed) && *self < node);
-      next = get(self_val_observed);
-      auto next_val_observed = enter(*next);
-      // Try to cut off the `next` if it's marked deleted
-      if (try_sever(*self, self_val_observed, *next, next_val_observed)) {
-        leave(*next, next_val_observed, true);
-        continue;
-      }
-      // Actor looks for the first non-deleted node to compare against.
-      // A chain of marked (deleted) nodes is not ordered, but it's true that all
-      // nodes in the chain are smaller than their first non-deleted following neighbor.
-      // Hence, if any of the marked nodes is greater than the `node`, the next non-deleted
-      // neighbor is also greater than the `node`, hence the `node` can be inserted after `self`.
-      while (is_deleted(next_val_observed) && *next < node) {
-        auto& new_next = *get(next_val_observed);
-        auto new_next_val_observed = enter(new_next);
-        leave(*next, next_val_observed);
-        next = &new_next;
-        next_val_observed = new_next_val_observed;
-      }
-      // Deleted or not, if `node < *next`, the actor can try to insert the node after `self`.
-      if (get_idx(*next) == kTerminal || node < *next) {
-        leave(*next, next_val_observed);
-        if (try_insert_at(*self, self_val_observed, node)) {
-          // Success! Now leave.
-          leave(*self, self_val_observed);
-          return true;
-        } else if (is_deleted(self_val_observed)) {
-          // The `self` has been deleted in the meanwhile! Have to retry from the root
-          leave(*self, self_val_observed);
-          return false;
-        } else {
-          // Something could have been inserted after `self`; repeat the outer loop.
-          continue;
+      assert(self < &node);
+      auto next_idx = self_val_observed & kPtrMask;
+      // The actor can make several attempts to insert the node
+      while (next_idx > node_idx) {
+        // Copy the visitor from `self` except the current actor
+        // (no need to enter the inserted node).
+        node.next_idx.store(self_val_observed - kVisited);
+        // Replace the link from `self` to `node` while also leaving it.
+        // At the same time, copy the other visitors.
+        // Note:
+        //  - `self` cannot be removed, because it's protected by visiting `prev`
+        auto self_val_desired = ((self_val_observed & kTagMask) - kVisited) | node_idx;
+        if (!self->next_idx.compare_exchange_weak(self_val_observed, self_val_desired)) {
+          // Succesfully replaced the value
+          leave(prev, prev_val_observed);
+          return;
+        }
+        // What can go wrong?
+        //   a. Changed number of visitors - need to copy to `node` again
+        //   b. Inserted a new node after `self` - need to check the order again and leave the
+        //      following nodes.
+        //   c. Deleting `self` or `next` is impossible due to visiting `prev` and`self`.
+        if (next_idx != (self_val_observed & kPtrMask)) {
+          // Definitely something is inserted.
+          auto next_val_expected = (self_val_observed & kTagMask) | next_idx;
+          leave(get(self_val_observed), next_val_expected);
+          next_idx = self_val_observed & kPtrMask;
         }
       }
-      // If this point is reached, the `next` must not be marked deleted, and it still precedes the
-      // `node`; the actor can advance independent of the state of current `self`.
-      leave(*self, self_val_observed);
-      self = next;
-      self_val_observed = next_val_observed;
-    }
-  }
-
-  /**
-   * Try to insert a node right after `self`.
-   * It's assumed and not checked that `self` is the right place:
-   *   - self < node
-   *   - node < next', where next' is the first non-deleted node after `self`.
-   *
-   * It may fail in two ways:
-   *   - if `is_deleted`, need to start over from the root node.
-   *   - otherwise, can attempt somewhere starting from `self`.
-   *
-   * @return whether insertion was successful
-   */
-  inline auto try_insert_at(node_t& self, index_t& self_val_observed, node_t& node) -> bool {
-    assert((self_val_observed & kVisitMask) > 0);
-    index_t next_idx_orig = self_val_observed & kPtrMask;
-    while (true) {
-      if (is_deleted(self_val_observed)) {
-        // Failed and have to start over from the root, because the actor cannot go back the list
-        // indefinitely
-        return false;
-      }
-      if ((self_val_observed & kPtrMask) != next_idx_orig) {
-        // A new node has been inserted in the meanwhile
-        auto& next = *get(self_val_observed);
-        if (node < next) {
-          // The actor is lucky enough that `self` is still the right place for the `node`
-          next_idx_orig = self_val_observed & kPtrMask;
-        } else {
-          // It's unclear where to insert the node, because any number of nodes could have been
-          // inserted between `self` and `node` by now.
-          return false;
-        }
-      }
-      // Try to insert the node
-      // Copy both the visitors except the current actor - it does not enter the inserted node,
-      // as he knows the newest value of `self` already.
-      node.next_idx.store(self_val_observed - kVisited);
-      auto self_val_desired = (self_val_observed & kVisitMask) | get_idx(node);
-      if (self.next_idx.compare_exchange_weak(self_val_observed, self_val_desired)) {
-        // Successfully inserted the node!
-        self_val_observed = self_val_desired;
-        return true;
-      }
+      // By this point in code, `node` definitely must go after `next`
+      leave(prev, prev_val_observed);
+      prev = self;
+      prev_val_observed = self_val_observed;
+      self = get(next_idx);
+      self_val_observed = enter(self);
     }
   }
 

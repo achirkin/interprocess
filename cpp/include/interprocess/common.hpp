@@ -1,8 +1,8 @@
+#pragma once
+
 #include <climits>
 #include <cstdint>
 #include <type_traits>
-
-#pragma once
 
 #ifdef INTERPROCESS_DEBUG
 #include <cstdio>

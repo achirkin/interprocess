@@ -358,7 +358,8 @@ struct resource_t {
     auto self_val_observed = enter(self);
     auto prev_val_observed = kRoot;
     while (true) {
-      assert(self < &node);
+      assert(self < &node);                   // `node` is to be inserted after `self`
+      assert(self_val_observed >= kVisited);  // The actor must have visited `self`
       auto next_idx = self_val_observed & kPtrMask;
       // The actor can make several attempts to insert the node
       while (next_idx > node_idx) {
@@ -370,7 +371,7 @@ struct resource_t {
         // Note:
         //  - `self` cannot be removed, because it's protected by visiting `prev`
         auto self_val_desired = ((self_val_observed & kTagMask) - kVisited) | node_idx;
-        if (!self->next_idx.compare_exchange_weak(self_val_observed, self_val_desired)) {
+        if (self->next_idx.compare_exchange_weak(self_val_observed, self_val_desired)) {
           // Succesfully replaced the value
           leave(prev, prev_val_observed);
           return;

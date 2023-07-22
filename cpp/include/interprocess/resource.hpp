@@ -105,7 +105,8 @@ struct resource_t {
   }
 
   /** Return an offset of this pointer w.r.t, to the shared memory area. */
-  [[nodiscard]] auto from_memory_offset(std::ptrdiff_t diff) const -> T* {
+  [[nodiscard]] auto from_memory_offset(std::ptrdiff_t diff) -> T* {
+    grow(diff + 1);
     return reinterpret_cast<T*>(head_) + diff;
   }
 

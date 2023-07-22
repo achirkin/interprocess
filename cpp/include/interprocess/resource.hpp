@@ -315,10 +315,10 @@ struct resource_t {
       //  - It points past the last allocated element
       //  - Actors do not need to enter/leave it (the tag is ignored completely)
       if ((self_val_observed & kPtrMask) == kTerminal) {
+        leave(self, self_val_observed);
         auto new_index = get(kRoot)->size.fetch_add(size);
         grow(new_index + size);
         auto* new_node = new (get(new_index)) node_t{kTerminal, size};
-        leave(self, self_val_observed);
         return new_node;
       }
       // otherwise, continue to look

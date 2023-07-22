@@ -24,7 +24,7 @@ constexpr inline auto round_up(T number_to_round, T modulus) noexcept -> T {
 }
 template <typename T>
 constexpr inline auto div_rounding_up(T x, T y) noexcept -> T {
-  return (x + y - 1) / y - 1;
+  return (x + y - 1) / y;
 }
 
 template <typename T, typename = std::enable_if_t<std::is_integral_v<T>>>

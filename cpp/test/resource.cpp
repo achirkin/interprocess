@@ -105,18 +105,30 @@ struct inspect_resource_t {
     return counter;
   }
 
-  void check_visit_leaks() { EXPECT_EQ(count_visits(), 0) << view_shared(); }
+  auto count_total_size() {
+    auto* root = res.get(resource_t<T>::kRoot);
+    index_t total_size = 1;  // root node
+    visit_nodes(root->next_idx.load(),
+                [&total_size](const auto& node, index_t, bool) { total_size += node.size; });
+    return total_size;
+  }
+
+  auto get_total_size() { return res.get(resource_t<T>::kRoot)->size.load(); }
 
   void check_memory_leaks() {
     auto* root = res.get(resource_t<T>::kRoot);
     index_t total_size = 1;  // root node
     visit_nodes(root->next_idx.load(),
                 [&total_size](const auto& node, index_t, bool) { total_size += node.size; });
-    EXPECT_EQ(total_size, root->size.load()) << view_all();
+    ASSERT_EQ(total_size, root->size.load()) << view_all();
   }
 };
 
 }  // namespace interprocess
+
+#define CHECK_VISIT_LEAKS(inspect) ASSERT_EQ(inspect.count_visits(), 0) << inspect.view_shared()
+#define CHECK_MEMORY_LEAKS(inspect) \
+  ASSERT_EQ(inspect.count_total_size(), inspect.get_total_size()) << inspect.view_all()
 
 inline constexpr size_t kSmallN = 7;
 
@@ -138,7 +150,7 @@ TEST(resource, basic_alloc_loop) {
       ptr[j].a = double(i);
       ptr[j].b = -int64_t(i);
     }
-    inspect.check_visit_leaks();
+    CHECK_VISIT_LEAKS(inspect);
   }
   for (size_t i = 0; i < kSmallN; i++) {
     auto [ptr, elems] = allocs[i];
@@ -147,9 +159,9 @@ TEST(resource, basic_alloc_loop) {
       EXPECT_EQ(ptr[j].b, -int64_t(i));
     }
     res.deallocate(ptr, elems);
-    inspect.check_visit_leaks();
+    CHECK_VISIT_LEAKS(inspect);
   }
-  inspect.check_memory_leaks();
+  CHECK_MEMORY_LEAKS(inspect);
 }
 
 // NOLINTNEXTLINE
@@ -166,7 +178,7 @@ TEST(resource, basic_alloc_interleaved_a) {
         ptr[j].a = double(i);
         ptr[j].b = -int64_t(i);
       }
-      inspect.check_visit_leaks();
+      CHECK_VISIT_LEAKS(inspect);
     }
     if (i > 0) {
       auto [ptr, elems] = allocs[i - 1];
@@ -176,9 +188,9 @@ TEST(resource, basic_alloc_interleaved_a) {
       }
       res.deallocate(ptr, elems);
     }
-    inspect.check_visit_leaks();
+    CHECK_VISIT_LEAKS(inspect);
   }
-  inspect.check_memory_leaks();
+  CHECK_MEMORY_LEAKS(inspect);
 }
 
 // NOLINTNEXTLINE
@@ -196,7 +208,7 @@ TEST(resource, basic_alloc_interleaved_b) {
         ptr[j].b = -int64_t(i);
       }
     }
-    inspect.check_visit_leaks();
+    CHECK_VISIT_LEAKS(inspect);
     if (i > 0) {
       auto [ptr, elems] = allocs[i - 1];
       for (size_t j = 0; j < elems; j++) {
@@ -205,9 +217,9 @@ TEST(resource, basic_alloc_interleaved_b) {
       }
       res.deallocate(ptr, elems);
     }
-    inspect.check_visit_leaks();
+    CHECK_VISIT_LEAKS(inspect);
   }
-  inspect.check_memory_leaks();
+  CHECK_MEMORY_LEAKS(inspect);
 }
 
 template <bool RuntimeChecks>
@@ -227,7 +239,7 @@ void random_interleaved_allocs(interprocess::resource_t<chunk_t> res, uint32_t s
       res.deallocate(ptr, elems);
     }
     if constexpr (RuntimeChecks) {
-      inspect.check_visit_leaks();
+      CHECK_VISIT_LEAKS(inspect);
     }
     if (i < len) {
       size_t elems = rng(engine);
@@ -239,11 +251,11 @@ void random_interleaved_allocs(interprocess::resource_t<chunk_t> res, uint32_t s
       }
     }
     if constexpr (RuntimeChecks) {
-      inspect.check_visit_leaks();
+      CHECK_VISIT_LEAKS(inspect);
     }
   }
   if constexpr (RuntimeChecks) {
-    inspect.check_memory_leaks();
+    CHECK_MEMORY_LEAKS(inspect);
   }
 }
 
@@ -334,7 +346,7 @@ class random_allocs_test_t : public ::testing::TestWithParam<random_allocs_param
         thread.join();
       }
     }
-    inspect_.check_visit_leaks();
+    CHECK_VISIT_LEAKS(inspect_);
     {
       std::vector<std::thread> threads{params_.n_dealloc_threads};
       auto max_batch_size = interprocess::div_rounding_up(sizes.size(), threads.size());
@@ -348,8 +360,8 @@ class random_allocs_test_t : public ::testing::TestWithParam<random_allocs_param
         thread.join();
       }
     }
-    inspect_.check_visit_leaks();
-    inspect_.check_memory_leaks();
+    CHECK_VISIT_LEAKS(inspect_);
+    CHECK_MEMORY_LEAKS(inspect_);
   }
 };
 
@@ -382,6 +394,6 @@ TEST(resource, random_alloc_interleaved_multithreaded) {
     thread.join();
   }
   auto inspect = interprocess::inspect_resource_t{res};
-  inspect.check_visit_leaks();
-  inspect.check_memory_leaks();
+  CHECK_VISIT_LEAKS(inspect);
+  CHECK_MEMORY_LEAKS(inspect);
 }

@@ -126,15 +126,18 @@ struct inspect_resource_t {
 
 }  // namespace interprocess
 
-#define CHECK_VISIT_LEAKS(inspect) ASSERT_EQ(inspect.count_visits(), 0) << inspect.view_shared()
+#define CHECK_VISIT_LEAKS(inspect) \
+  ASSERT_EQ(inspect.count_visits(), 0) << inspect.view_shared()  // NOLINT
 #define CHECK_MEMORY_LEAKS(inspect) \
-  ASSERT_EQ(inspect.count_total_size(), inspect.get_total_size()) << inspect.view_all()
+  ASSERT_EQ(inspect.count_total_size(), inspect.get_total_size()) << inspect.view_all()  // NOLINT
 
 inline constexpr size_t kSmallN = 7;
 
 struct chunk_t {
   double a;
   int64_t b;
+  uint64_t c = 0;
+  uint64_t d = 0;
 };
 
 // NOLINTNEXTLINE
@@ -377,18 +380,19 @@ INSTANTIATE_TEST_SUITE_P(
                     random_allocs_params_t{20, 1, 1}, random_allocs_params_t{50, 1, 2},
                     random_allocs_params_t{50, 1, 5}, random_allocs_params_t{500, 1, 20},
                     random_allocs_params_t{20, 1, 1}, random_allocs_params_t{50, 2, 2},
-                    random_allocs_params_t{50, 5, 5}, random_allocs_params_t{500, 20, 20}));
+                    random_allocs_params_t{50, 5, 5}, random_allocs_params_t{500, 20, 20},
+                    random_allocs_params_t{10000, 100, 100}));
 
 // NOLINTNEXTLINE
 TEST(resource, random_alloc_interleaved_multithreaded) {
   auto res = interprocess::resource_t<chunk_t>::create();
-  constexpr size_t kThreads = 2;
+  constexpr size_t kThreads = 30;
   std::seed_seq s;
   std::vector<std::uint32_t> seeds{kThreads};
   std::vector<std::thread> threads{kThreads};
   s.generate(seeds.begin(), seeds.end());
   for (size_t i = 0; i < kThreads; i++) {
-    threads[i] = std::thread(random_interleaved_allocs<false>, res, seeds[i], 20, 5);
+    threads[i] = std::thread(random_interleaved_allocs<false>, res, seeds[i], 2000, 100);
   }
   for (auto& thread : threads) {
     thread.join();

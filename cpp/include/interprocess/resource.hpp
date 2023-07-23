@@ -29,7 +29,7 @@ struct resource_t {
                             const shared_object_name_t& name = {}) noexcept -> resource_t {
     auto initial_size = kRoot + 1;
     auto r = resource_t{blob_t::create(sizeof(node_t) * initial_size, max_size, name)};
-    new (r.head_ + kRoot) node_t{kTerminal, initial_size};
+    new (r.head_ + kRoot) node_t{kTerminal, initial_size, kTerminal};
     return r;
   }
 
@@ -136,20 +136,21 @@ struct resource_t {
       - A connection between a visited node and its next cannot be severed.
    */
   struct alignas(sizeof(T)) node_t {
-    std::atomic<index_t> next_idx;
-    std::atomic<index_t> size;
-
     /**
-     * Replace the pointer part of the `next_idx` and capture its latest previous state.
-     *
-     * @return the new state.
+     * Pack the visitor counter and an index.
+     * In the normal state, it points to the next node, hence `next_idx > self_idx` (assuming no
+     * tag). When the node is unreachable from the root, but the next node is reachable from the
+     * root, `next_idx < self_idx` (in fact, it points to the previous - last reachable node). When
+     * both self and next nodes are unreachable from the root, `next_idx == self_idx`.
      */
-    inline auto replace_pointer(index_t& val_observed, index_t val_new) -> index_t {
-      do {
-        val_new = (val_observed & kTagMask) | (val_new & kPtrMask);
-      } while (!next_idx.compare_exchange_weak(val_observed, val_new));
-      return val_new;
-    }
+    std::atomic<index_t> next_idx;
+    /** Number of elements in the node */
+    std::atomic<index_t> size;
+    /**
+     * A backup link to a next node, for the case when `next_idx` used to indicate that the node is
+     * unreachable from the root.
+     */
+    std::atomic<index_t> backup_idx;
   };
 
   blob_t blob_;
@@ -181,13 +182,14 @@ struct resource_t {
 
   /** Inits the node in the memory; sets everything except next_idx. */
   inline auto create(index_t index, index_t size) -> node_t& {
-    return *(new (get(index)) node_t{kTerminal, size});
+    return *(new (get(index)) node_t{kTerminal, size, kTerminal});
   }
 
   /** Merge owned lists (no tags / safety). */
   inline auto unsafe_merge(index_t left_idx, index_t right_idx) -> index_t {
+    // TODO: replace usage of this by just a single insert.
     //  Prerequisite: both lists end with kTerminal.
-    node_t fake_root{kTerminal, 0};
+    node_t fake_root{kTerminal, 0, kTerminal};
     node_t* tail = &fake_root;
     while (left_idx != kTerminal && right_idx != kTerminal) {
       node_t* left = get(left_idx);
@@ -213,50 +215,9 @@ struct resource_t {
 
   /** Try to increment `self`'s visitor counter and return its new state. */
   inline auto enter(node_t* self) -> index_t {
-    return self->next_idx.fetch_add(kVisited) + kVisited;
-  }
-
-  /**
-   * Decrement `self`'s visitor counter, possibly take ownership of the node (saved in
-   * `owned_nodes_`). The node must be visited via its `next_idx` counter.
-   */
-  inline auto leave_one(node_t* self) -> index_t {
-    /*
-    Possible state:
-      a. [most likely] Just decrement the counter; the pointer value does not change.
-         There may or may not be other visitors, none of the actor's concern.
-         No extra action required.
-      b. Another node(s) was inserted after `self`; this is detected by the changed pointer.
-         The pointer is still ordered (ptr > get_idx(self)).
-         CONSEQUENCE: the actor is automatically visiting the inserted node.
-      c. `self` was deleted, but there are other actors in the node; this is detected by
-         the pointer being equal to `kRoot`.
-         No extra action required.
-      d. `self` was deleted, and the actor is the last one to visit it; detected same as (c),
-         plus no visitors
-         CONSEQUENCE: the actor adds the node to `owned_nodes_`.
-      e. Upon a dummy (nullptr) node, the actor does nothing and returns kTerminal.
-
-    Not possible states:
-      - The node given by `self_val_observed` cannot be deleted, even if multiple nodes were
-        inserted in between, because no node can be deleted if there are any visitors to its
-        predecessor.
-    */
-    if (self == nullptr) {
-      return kTerminal;  // (e) Shortcut for dummy nodes
-    }
-    auto self_val_observed = self->next_idx.fetch_sub(kVisited);
-    assert((self_val_observed & kTagMask) > 0);
-    self_val_observed -= kVisited;
-    auto ptr_observed = self_val_observed & kPtrMask;
-    auto tag_observed = self_val_observed & kTagMask;
-    if (ptr_observed == kRoot) {
-      if (tag_observed == 0) {
-        // (d). The node was deleted and this actor is the last visitor. Own it.
-        self->next_idx.store(kTerminal);
-        owned_nodes_ = unsafe_merge(owned_nodes_, get_idx(self));
-      }
-      return kTerminal | tag_observed;
+    auto self_val_observed = self->next_idx.fetch_add(kVisited) + kVisited;
+    if ((self_val_observed & kPtrMask) <= get_idx(self)) {
+      return (self_val_observed & kTagMask) | self->backup_idx.load();
     }
     return self_val_observed;
   }
@@ -270,13 +231,91 @@ struct resource_t {
    *                (does not need to exist, the tag is ignored)
    */
   inline void leave(node_t* self, index_t limit) {
+    if (self == nullptr) {
+      return;
+    }
     limit &= kPtrMask;
-    index_t idx = kRoot;
+    index_t self_idx = get_idx(self);
+    index_t visited_count = kVisited;
     do {
-      grow(idx + 1);
-      idx = leave_one(self) & kPtrMask;
-      self = head_ + idx;
-    } while (idx < limit);
+      grow(self_idx + 1);
+      index_t backup_idx = kTerminal;
+      index_t self_val_observed, next_idx;
+      // Leave the node and check its backup idx if necessary
+      do {
+        self_val_observed = self->next_idx.load();
+        assert((self_val_observed & kTagMask) > 0);
+        next_idx = self_val_observed & kPtrMask;
+        if (next_idx <= self_idx) {
+          backup_idx = self->backup_idx.load();
+        }
+      } while (!self->next_idx.compare_exchange_weak(self_val_observed,
+                                                     self_val_observed - visited_count));
+      self_val_observed -= visited_count;
+      // At this point, the actor left `self`.
+      // Either the actor owns `self` or cannot touch it anymore.
+      if ((self_val_observed & kTagMask) > 0) {
+        // not owning `self`. Just find a proper next `self_idx`
+        if (next_idx <= self_idx) {
+          self_idx = backup_idx;
+        } else {
+          self_idx = next_idx;
+        }
+        visited_count = kVisited;
+      } else {
+        if (next_idx <= self_idx) {
+          // Owning the deleted `self`
+          self->next_idx.store(kTerminal);
+          self->backup_idx.store(kTerminal);
+          owned_nodes_ = unsafe_merge(owned_nodes_, self_idx);
+          if (next_idx == self_idx) {
+            // The actor is the last visitor to a not-last node in the deleted chain.
+            // Need to leave `next` extra time.
+            if (limit <= backup_idx) {
+              limit = backup_idx + 1;
+              visited_count = kVisited;
+            } else {
+              visited_count = kVisited * 2;
+            }
+            self_idx = backup_idx;
+          } else {
+            // The actor is owning the last node  in a deleted chain.
+            // Need to leave the `next_idx`, which is actually the predecessor to the deleted chain.
+            limit = std::max(limit, backup_idx);
+            self_idx = next_idx;
+            visited_count = kVisited;
+          }
+        } else {
+          visited_count = kVisited;
+          self_idx = next_idx;
+        }
+      }
+      self = head_ + self_idx;
+    } while (self_idx < limit);
+  }
+
+  inline void mark_deleted(node_t* self, index_t limit, index_t prev_idx) {
+    limit &= kPtrMask;
+    prev_idx &= kPtrMask;
+    index_t self_idx = get_idx(self);
+    index_t extra_visit = 0;
+    bool next_deleted = true;
+    while (next_deleted) {
+      index_t self_val_desired, next_idx;
+      index_t self_val_observed = self->next_idx.load();
+      do {
+        next_idx = self_val_observed & kPtrMask;
+        assert(next_idx > self_idx);
+        next_deleted = next_idx < limit;
+        self->backup_idx.store(next_idx);
+        self_val_desired =
+            ((self_val_observed + extra_visit) & kTagMask) | (next_deleted ? self_idx : prev_idx);
+      } while (!self->next_idx.compare_exchange_weak(self_val_observed, self_val_desired));
+      if (!next_deleted) return;
+      extra_visit = kVisited;
+      self_idx = next_idx;
+      self = get(self_idx);
+    }
   }
 
   inline auto pop_first_local(std::size_t size) -> node_t* {
@@ -310,35 +349,27 @@ struct resource_t {
         leave(self, self_val_observed);
         return local;
       }
-      // Special case: the last node
-      //  - It's never deleted
-      //  - It points past the last allocated element
-      //  - Actors do not need to enter/leave it (the tag is ignored completely)
+      // Reached the end of the list: allocate new node.
       if ((self_val_observed & kPtrMask) == kTerminal) {
         leave(self, self_val_observed);
         auto new_index = get(kRoot)->size.fetch_add(size);
         grow(new_index + size);
-        auto* new_node = new (get(new_index)) node_t{kTerminal, size};
+        auto* new_node = new (get(new_index)) node_t{kTerminal, size, kTerminal};
         return new_node;
       }
       // otherwise, continue to look
       next = get(self_val_observed);
       auto next_val_observed = enter(next);
+      assert((next_val_observed & kPtrMask) > (self_val_observed & kPtrMask));  // Not deleted
       // Try to take `next` if:
       //   1. It's big enough
-      //   2. This actor is the only visitor.
+      //   2. This actor is the only visitor of `self`.
       if (next->size.load() >= size && (self_val_observed & kTagMask) == kVisited) {
         auto self_val_expected = self_val_observed;
         auto self_val_desired = (next_val_observed & kPtrMask) | kVisited;
         if (self->next_idx.compare_exchange_strong(self_val_expected, self_val_desired)) {
-          self_val_observed = self_val_desired;
-          // Succesfully removed `next`.
-          // If the actor now leaves `next` last, they will own it.
-          // To notify other actors that `next` is deleted, replace its pointer with the root:
-          // the changed, unordered, link means the node has been severed from the list.
-          next->replace_pointer(next_val_observed, kRoot);
-          // Pass the previous state of `next` (just before short-circuited to the root), so that
-          // the actor can leave and own it as usual.
+          self_val_observed = enter(self);  // TODO: try not to enter second time
+          mark_deleted(next, next_val_observed, get_idx(self));
           leave(next, next_val_observed);
           continue;
         }
@@ -351,7 +382,8 @@ struct resource_t {
   }
 
   /** Insert a node. */
-  inline void insert(node_t& node) {
+  inline auto try_insert(node_t& node) -> bool {
+    // TODO: try to keep only one node visited most of the time.
     node_t* self = get(kRoot);
     node_t* prev = nullptr;
     auto node_idx = get_idx(&node);
@@ -361,6 +393,13 @@ struct resource_t {
       assert(self < &node);                   // `node` is to be inserted after `self`
       assert(self_val_observed >= kVisited);  // The actor must have visited `self`
       auto next_idx = self_val_observed & kPtrMask;
+      if (next_idx <= get_idx(self)) {
+        // The node has been deleted while the actor tried to insert past it.
+        // Need to try again.
+        leave(self, self_val_observed);
+        leave(prev, prev_val_observed);
+        return false;
+      }
       // The actor can make several attempts to insert the node
       while (next_idx > node_idx) {
         // Copy the visitor from `self` except the current actor
@@ -374,7 +413,7 @@ struct resource_t {
         if (self->next_idx.compare_exchange_weak(self_val_observed, self_val_desired)) {
           // Succesfully replaced the value
           leave(prev, prev_val_observed);
-          return;
+          return true;
         }
         // What can go wrong?
         //   a. Changed number of visitors - need to copy to `node` again
@@ -395,6 +434,11 @@ struct resource_t {
       self = get(next_idx);
       self_val_observed = enter(self);
     }
+  }
+
+  inline void insert(node_t& node) {
+    while (!try_insert(node))
+      ;
   }
 
   /** Reinsert all locally owned nodes until the list is empty. */

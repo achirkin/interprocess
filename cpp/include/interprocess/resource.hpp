@@ -349,17 +349,21 @@ struct resource_t {
       // otherwise, continue to look
       next = get(self_val_observed);
       auto next_val_observed = enter(next);
-      assert((next_val_observed & kPtrMask) > (self_val_observed & kPtrMask));  // Not deleted
       // Try to take `next` if:
       //   1. It's big enough
       //   2. This actor is the only visitor of `self`.
-      if (next->size.load() >= size && (self_val_observed & kTagMask) == kVisited) {
+      //   3. (optimization) `self` is not deleted - skip and try to leave it.
+      bool self_is_deleted = (self_val_observed & kPtrMask) < get_idx(self);
+      if (!self_is_deleted && next->size.load() >= size &&
+          (self_val_observed & kTagMask) == kVisited) {
         auto self_val_expected = self_val_observed;
         auto self_val_desired = (next_val_observed & kPtrMask) | kVisited;
         if (self->next_idx.compare_exchange_strong(self_val_expected, self_val_desired)) {
-          self_val_observed = enter(self);  // TODO: try not to enter second time
+          // By calling `mark_deleted`, the actor effectively transfers the ownership of `self`.
+          // step on the next and continue as usual.
           mark_deleted(next, next_val_observed, get_idx(self));
-          leave(next, next_val_observed);
+          self = next;
+          self_val_observed = next_val_observed;
           continue;
         }
       }

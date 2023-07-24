@@ -185,32 +185,23 @@ struct resource_t {
     return *(new (get(index)) node_t{kTerminal, size, kTerminal});
   }
 
-  /** Merge owned lists (no tags / safety). */
-  inline auto unsafe_merge(index_t left_idx, index_t right_idx) -> index_t {
-    // TODO: replace usage of this by just a single insert.
-    //  Prerequisite: both lists end with kTerminal.
-    node_t fake_root{kTerminal, 0, kTerminal};
-    node_t* tail = &fake_root;
-    while (left_idx != kTerminal && right_idx != kTerminal) {
-      node_t* left = get(left_idx);
-      node_t* right = get(right_idx);
-      if (left < right) {
-        tail->next_idx.store(left_idx);
-        tail = left;
-        left_idx = left->next_idx.load();
-      } else {
-        tail->next_idx.store(right_idx);
-        tail = right;
-        right_idx = right->next_idx.load();
-      }
+  /** Add the node to the local list of owned nodes (no thread safety). */
+  inline void add_to_owned_list(node_t* node) {
+    node->backup_idx.store(kTerminal);
+    auto node_idx = get_idx(node);
+    if (node_idx < owned_nodes_) {
+      node->next_idx.store(owned_nodes_);
+      owned_nodes_ = node_idx;
+      return;
     }
-    // By this point either of the two lists is surely empty.
-    if (left_idx != kTerminal) {
-      tail->next_idx.store(left_idx);
-    } else {
-      tail->next_idx.store(right_idx);
+    auto self = get(owned_nodes_);
+    index_t next_idx = self->next_idx.load();
+    while (next_idx < node_idx) {
+      self = get(next_idx);
+      next_idx = self->next_idx.load();
     }
-    return fake_root.next_idx.load();
+    node->next_idx.store(next_idx);
+    self->next_idx.store(node_idx);
   }
 
   /** Try to increment `self`'s visitor counter and return its new state. */
@@ -265,9 +256,7 @@ struct resource_t {
       } else {
         if (next_idx <= self_idx) {
           // Owning the deleted `self`
-          self->next_idx.store(kTerminal);
-          self->backup_idx.store(kTerminal);
-          owned_nodes_ = unsafe_merge(owned_nodes_, self_idx);
+          add_to_owned_list(self);
           if (next_idx == self_idx) {
             // The actor is the last visitor to a not-last node in the deleted chain.
             // Need to leave `next` extra time.

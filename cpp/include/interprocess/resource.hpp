@@ -206,11 +206,7 @@ struct resource_t {
 
   /** Try to increment `self`'s visitor counter and return its new state. */
   inline auto enter(node_t* self) -> index_t {
-    auto self_val_observed = self->next_idx.fetch_add(kVisited) + kVisited;
-    if ((self_val_observed & kPtrMask) <= get_idx(self)) {
-      return (self_val_observed & kTagMask) | self->backup_idx.load();
-    }
-    return self_val_observed;
+    return self->next_idx.fetch_add(kVisited) + kVisited;
   }
 
   /**
@@ -346,14 +342,15 @@ struct resource_t {
         auto* new_node = new (get(new_index)) node_t{kTerminal, size, kTerminal};
         return new_node;
       }
-      // otherwise, continue to look
-      next = get(self_val_observed);
+      // Otherwise, continue to look
+      // NB: the actor needs to check if this node is deleted and use `backup_idx` accordingly
+      bool self_is_deleted = (self_val_observed & kPtrMask) <= get_idx(self);
+      next = get(self_is_deleted ? self->backup_idx.load() : self_val_observed);
       auto next_val_observed = enter(next);
       // Try to take `next` if:
       //   1. It's big enough
       //   2. This actor is the only visitor of `self`.
       //   3. (optimization) `self` is not deleted - skip and try to leave it.
-      bool self_is_deleted = (self_val_observed & kPtrMask) < get_idx(self);
       if (!self_is_deleted && next->size.load() >= size &&
           (self_val_observed & kTagMask) == kVisited) {
         auto self_val_expected = self_val_observed;
@@ -376,12 +373,9 @@ struct resource_t {
 
   /** Insert a node. */
   inline auto try_insert(node_t& node) -> bool {
-    // TODO: try to keep only one node visited most of the time.
     node_t* self = get(kRoot);
-    node_t* prev = nullptr;
     auto node_idx = get_idx(&node);
     auto self_val_observed = enter(self);
-    auto prev_val_observed = kRoot;
     while (true) {
       assert(self < &node);                   // `node` is to be inserted after `self`
       assert(self_val_observed >= kVisited);  // The actor must have visited `self`
@@ -390,7 +384,6 @@ struct resource_t {
         // The node has been deleted while the actor tried to insert past it.
         // Need to try again.
         leave(self, self_val_observed);
-        leave(prev, prev_val_observed);
         return false;
       }
       // The actor can make several attempts to insert the node
@@ -400,32 +393,33 @@ struct resource_t {
         node.next_idx.store(self_val_observed - kVisited);
         // Replace the link from `self` to `node` while also leaving it.
         // At the same time, copy the other visitors.
-        // Note:
-        //  - `self` cannot be removed, because it's protected by visiting `prev`
         auto self_val_desired = ((self_val_observed & kTagMask) - kVisited) | node_idx;
         if (self->next_idx.compare_exchange_weak(self_val_observed, self_val_desired)) {
           // Succesfully replaced the value
-          leave(prev, prev_val_observed);
           return true;
         }
         // What can go wrong?
         //   a. Changed number of visitors - need to copy to `node` again
         //   b. Inserted a new node after `self` - need to check the order again and leave the
         //      following nodes.
-        //   c. Deleting `self` or `next` is impossible due to visiting `prev` and`self`.
+        //   c. `self` has been deleted
         if (next_idx != (self_val_observed & kPtrMask)) {
+          if ((self_val_observed & kPtrMask) <= get_idx(self)) {
+            // `self` has been deleted!
+            leave(self, next_idx);
+            return false;
+          }
           // Definitely something is inserted.
-          auto next_val_expected = (self_val_observed & kTagMask) | next_idx;
-          leave(get(self_val_observed), next_val_expected);
+          leave(get(self_val_observed), next_idx);
           next_idx = self_val_observed & kPtrMask;
         }
       }
       // By this point in code, `node` definitely must go after `next`
-      leave(prev, prev_val_observed);
-      prev = self;
-      prev_val_observed = self_val_observed;
+      auto prev = self;
+      auto prev_val_observed = self_val_observed;
       self = get(next_idx);
       self_val_observed = enter(self);
+      leave(prev, prev_val_observed);
     }
   }
 

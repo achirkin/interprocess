@@ -29,7 +29,7 @@ struct resource_t {
                             const shared_object_name_t& name = {}) noexcept -> resource_t {
     auto initial_size = kRoot + 1;
     auto r = resource_t{blob_t::create(sizeof(node_t) * initial_size, max_size, name)};
-    new (r.head_ + kRoot) node_t{kTerminal, initial_size, kTerminal};
+    new (r.head_ + kRoot) node_t{kTerminal, kTerminal, initial_size, 0};
     return r;
   }
 
@@ -44,9 +44,9 @@ struct resource_t {
       return nullptr;
     }
     auto* ptr = pop_first(size);
-    if (ptr != nullptr && ptr->size.load() > size) {
+    if (ptr != nullptr && ptr->size_p.load() > size) {
       auto node_idx = get_idx(ptr) + size;
-      auto& leftover = create(node_idx, ptr->size.load() - size);
+      auto& leftover = create(node_idx, ptr->size_p.load() - size);
       insert(leftover);
     }
     cleanup();
@@ -143,14 +143,26 @@ struct resource_t {
      * root, `next_idx < self_idx` (in fact, it points to the previous - last reachable node). When
      * both self and next nodes are unreachable from the root, `next_idx == self_idx`.
      */
-    std::atomic<index_t> next_idx;
-    /** Number of elements in the node */
-    std::atomic<index_t> size;
+    std::atomic<index_t> next_idx{kTerminal};
     /**
      * A backup link to a next node, for the case when `next_idx` used to indicate that the node is
      * unreachable from the root.
      */
-    std::atomic<index_t> backup_idx;
+    std::atomic<index_t> backup_idx{kTerminal};
+    /** Number of elements in the node to the right from its idx. */
+    std::atomic<index_t> size_p{0};
+    /** Number of elements in the node to the left from its idx. */
+    std::atomic<index_t> size_n{0};
+    /** Shift the node left and set the backup_idx to kTerminal. */
+    [[nodiscard]] auto normalize() -> node_t* {
+      auto sn = size_n.load();
+      if (sn > 0) {
+        return new (this - sn) node_t{kTerminal, kTerminal, size_p.load() + sn, 0};
+      } else {
+        backup_idx.store(kTerminal);
+        return this;
+      }
+    }
   };
 
   blob_t blob_;
@@ -182,12 +194,12 @@ struct resource_t {
 
   /** Inits the node in the memory; sets everything except next_idx. */
   inline auto create(index_t index, index_t size) -> node_t& {
-    return *(new (get(index)) node_t{kTerminal, size, kTerminal});
+    return *(new (get(index)) node_t{kTerminal, kTerminal, size, 0});
   }
 
   /** Add the node to the local list of owned nodes (no thread safety). */
   inline void add_to_owned_list(node_t* node) {
-    node->backup_idx.store(kTerminal);
+    node = node->normalize();
     auto node_idx = get_idx(node);
     if (node_idx < owned_nodes_) {
       node->next_idx.store(owned_nodes_);
@@ -308,7 +320,7 @@ struct resource_t {
     auto self_idx = owned_nodes_ & kPtrMask;
     while (self_idx != kTerminal) {
       auto* node = get(self_idx);
-      if (node->size.load() >= size) {
+      if (node->size_p.load() >= size) {
         if (prev_idx != kRoot) {
           get(prev_idx)->next_idx.store(node->next_idx.load());
         } else {
@@ -337,21 +349,31 @@ struct resource_t {
       // Reached the end of the list: allocate new node.
       if ((self_val_observed & kPtrMask) == kTerminal) {
         leave(self, self_val_observed);
-        auto new_index = get(kRoot)->size.fetch_add(size);
+        auto new_index = get(kRoot)->size_p.fetch_add(size);
         grow(new_index + size);
-        auto* new_node = new (get(new_index)) node_t{kTerminal, size, kTerminal};
+        auto* new_node = new (get(new_index)) node_t{kTerminal, kTerminal, size, 0};
         return new_node;
       }
       // Otherwise, continue to look
       // NB: the actor needs to check if this node is deleted and use `backup_idx` accordingly
       bool self_is_deleted = (self_val_observed & kPtrMask) <= get_idx(self);
       next = get(self_is_deleted ? self->backup_idx.load() : self_val_observed);
+      // If `next` is big enough, just cut it in-place.
+      // NB: cutting `next` only on the left; cutting it on the right would hurt performance;
+      //     probably too many small nodes being created.
+      auto next_size_n = next->size_n.load();
+      while (next_size_n >= size) {
+        if (next->size_n.compare_exchange_weak(next_size_n, next_size_n - size)) {
+          leave(self, self_val_observed);
+          return new (next - next_size_n) node_t{kTerminal, kTerminal, size, 0};
+        }
+      }
       auto next_val_observed = enter(next);
       // Try to take `next` if:
       //   1. It's big enough
       //   2. This actor is the only visitor of `self`.
-      //   3. (optimization) `self` is not deleted - skip and try to leave it.
-      if (!self_is_deleted && next->size.load() >= size &&
+      //   3. (optimization) `self` is not deleted - otherwise skip and try to leave it.
+      if (!self_is_deleted && next->size_p.load() + next_size_n >= size &&
           (self_val_observed & kTagMask) == kVisited) {
         auto self_val_expected = self_val_observed;
         auto self_val_desired = (next_val_observed & kPtrMask) | kVisited;
@@ -375,6 +397,14 @@ struct resource_t {
   inline auto try_insert(node_t& node) -> bool {
     node_t* self = get(kRoot);
     auto node_idx = get_idx(&node);
+    auto node_size = node.size_p.load();
+    {
+      // special case: check if the node is on the edge of the list
+      auto expected_list_size = node_idx + node_size;
+      if (self->size_p.compare_exchange_strong(expected_list_size, node_idx)) {
+        return true;
+      }
+    }
     auto self_val_observed = enter(self);
     while (true) {
       assert(self < &node);                   // `node` is to be inserted after `self`
@@ -388,13 +418,31 @@ struct resource_t {
       }
       // The actor can make several attempts to insert the node
       while (next_idx > node_idx) {
+        {
+          // Special case: glue the `node` to self.
+          index_t expected_self_size_p = &node - self;
+          if (self->size_p.compare_exchange_strong(expected_self_size_p,
+                                                   expected_self_size_p + node_size)) {
+            leave(self, self_val_observed);
+            return true;
+          }
+        }
+        if (next_idx < kTerminal) {
+          // Special case: glue the `node` to next.
+          index_t expected_next_size_n = next_idx - node_idx - node_size;
+          if (get(next_idx)->size_n.compare_exchange_strong(expected_next_size_n,
+                                                            expected_next_size_n + node_size)) {
+            leave(self, self_val_observed);
+            return true;
+          }
+        }
         // Copy the visitor from `self` except the current actor
         // (no need to enter the inserted node).
         node.next_idx.store(self_val_observed - kVisited);
         // Replace the link from `self` to `node` while also leaving it.
         // At the same time, copy the other visitors.
         auto self_val_desired = ((self_val_observed & kTagMask) - kVisited) | node_idx;
-        if (self->next_idx.compare_exchange_weak(self_val_observed, self_val_desired)) {
+        if (self->next_idx.compare_exchange_strong(self_val_observed, self_val_desired)) {
           // Succesfully replaced the value
           return true;
         }

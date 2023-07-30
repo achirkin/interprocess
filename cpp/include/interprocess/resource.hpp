@@ -216,6 +216,13 @@ struct resource_t {
     }
     node->next_idx.store(next_idx);
     self->next_idx.store(node_idx);
+    // Try to merge adjacent nodes, if any
+    while (self + self->size_p.load() == node) {
+      self->size_p.fetch_add(node->size_p.load());
+      next_idx = node->next_idx.load();
+      self->next_idx.store(next_idx);
+      node = get(next_idx);
+    }
   }
 
   /** Try to increment `self`'s visitor counter and return its new state. */
@@ -375,12 +382,14 @@ struct resource_t {
       //   1. It's big enough
       //   2. This actor is the only visitor of `self`.
       //   3. (optimization) `self` is not deleted - otherwise skip and try to leave it.
-      if (!self_is_deleted && next->size_p.load() + next_size_n >= size &&
+      bool fits_size = next->size_p.load() + next_size_n >= size;
+      bool needs_merge = self + self->size_p.load() + next_size_n == next;
+      if (!self_is_deleted && (fits_size || needs_merge) &&
           (self_val_observed & kTagMask) == kVisited) {
         auto self_val_expected = self_val_observed;
         auto self_val_desired = (next_val_observed & kPtrMask) | kVisited;
         if (self->next_idx.compare_exchange_strong(self_val_expected, self_val_desired)) {
-          // By calling `mark_deleted`, the actor effectively transfers the ownership of `self`.
+          // By calling mark-deleted, the actor effectively transfers the ownership of `self`.
           // step on the next and continue as usual.
           mark_deleted(next, next_val_observed, get_idx(self));
           self = next;
@@ -415,7 +424,7 @@ struct resource_t {
       if (next_idx <= get_idx(self)) {
         // The node has been deleted while the actor tried to insert past it.
         // Need to try again.
-        leave(self, self_val_observed);
+        leave(self, next_idx);
         return false;
       }
       // The actor can make several attempts to insert the node
@@ -425,7 +434,27 @@ struct resource_t {
           index_t expected_self_size_p = &node - self;
           if (self->size_p.compare_exchange_strong(expected_self_size_p,
                                                    expected_self_size_p + node_size)) {
-            leave(self, self_val_observed);
+            // Successfully enlarged `self`; check if it can be merged with `next`.
+            if ((self_val_observed & kTagMask) == kVisited && next_idx < kTerminal) {
+              expected_self_size_p += node_size;
+              auto next = get(next_idx);
+              if (self + expected_self_size_p + next->size_n.load() == next) {
+                auto next_val_observed = enter(next);
+                auto self_val_expected = self_val_observed;
+                auto self_val_desired = (next_val_observed & kPtrMask) | kVisited;
+                if (self->next_idx.compare_exchange_strong(self_val_expected, self_val_desired)) {
+                  // By calling mark-deleted, the actor effectively transfers the ownership of
+                  // `self`. step on the next and continue as usual.
+                  mark_deleted(next, next_val_observed, get_idx(self));
+                  self = next;
+                  self_val_observed = next_val_observed;
+                  next_idx = self_val_observed & kPtrMask;
+                } else {
+                  leave(next, next_val_observed);
+                }
+              }
+            }
+            leave(self, next_idx);
             return true;
           }
         }
@@ -434,7 +463,7 @@ struct resource_t {
           index_t expected_next_size_n = next_idx - node_idx - node_size;
           if (get(next_idx)->size_n.compare_exchange_strong(expected_next_size_n,
                                                             expected_next_size_n + node_size)) {
-            leave(self, self_val_observed);
+            leave(self, next_idx);
             return true;
           }
         }
@@ -465,11 +494,25 @@ struct resource_t {
         }
       }
       // By this point in code, `node` definitely must go after `next`
-      auto prev = self;
-      auto prev_val_observed = self_val_observed;
-      self = get(next_idx);
-      self_val_observed = enter(self);
-      leave(prev, prev_val_observed);
+      auto next = get(next_idx);
+      auto next_val_observed = enter(next);
+      // ------------------ experiment -----------------------------------------------
+      // if ((self_val_observed & kTagMask) == kVisited &&
+      //     self + self->size_p.load() + next->size_n.load() == next) {
+      //   auto self_val_desired = (next_val_observed & kPtrMask) | kVisited;
+      //   if (self->next_idx.compare_exchange_strong(self_val_observed, self_val_desired)) {
+      //     // By calling mark-deleted, the actor effectively transfers the ownership of
+      //     // `self`. step on the next and continue as usual.
+      //     mark_deleted(next, next_val_observed, get_idx(self));
+      //     self = next;
+      //     self_val_observed = next_val_observed;
+      //     continue;
+      //   }
+      // }
+      // // ------------------ experiment -----------------------------------------------
+      leave(self, next_idx);
+      self = next;
+      self_val_observed = next_val_observed;
     }
   }
 

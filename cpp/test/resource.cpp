@@ -400,4 +400,5 @@ INSTANTIATE_TEST_SUITE_P(
                     random_allocs_params_t{50, 1, 5, 5}, random_allocs_params_t{500, 1, 20, 3},
                     random_allocs_params_t{20, 1, 1, 1}, random_allocs_params_t{50, 2, 2, 2},
                     random_allocs_params_t{50, 5, 5, 5}, random_allocs_params_t{500, 20, 20, 400},
+                    random_allocs_params_t{25000, 30, 30, 1000},
                     random_allocs_params_t{10000, 100, 100, 500}));

@@ -1,4 +1,4 @@
-Checks:          'clang-analyzer-*,cppcoreguidelines-*,readability-*,portability-*,bugprone-*,performance-*,modernize-*,-cppcoreguidelines-pro-bounds-*,-cppcoreguidelines-pro-type-*-cast,-readability-else-after-return,-cppcoreguidelines-owning-memory'
+Checks:          'clang-analyzer-*,cppcoreguidelines-*,readability-*,portability-*,bugprone-*,performance-*,modernize-*,-cppcoreguidelines-pro-bounds-*,-cppcoreguidelines-pro-type-*-cast,-readability-else-after-return,-readability-identifier-length,-cppcoreguidelines-owning-memory,-bugprone-easily-swappable-parameters'
 WarningsAsErrors: ''
 HeaderFilterRegex: 'cpp/(include|src|test).*$'
 AnalyzeTemporaryDtors: false

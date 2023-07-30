@@ -70,16 +70,15 @@ struct inspect_resource_t {
       return out << "resource.shared: " << view_chain(resource_t<T>::kRoot);
     }};
   }
-  auto view_local() {
-    return print_stream{[&](std::ostream& out) -> std::ostream& {
-      return out << "resource.local: " << view_chain(res.owned_nodes_);
-    }};
-  }
+  // auto view_local() {
+  //   return print_stream{[&](std::ostream& out) -> std::ostream& {
+  //     return out << "resource.local: " << view_chain(res.owned_nodes_);
+  //   }};
+  // }
   auto view_all() {
     return print_stream{[&](std::ostream& out) -> std::ostream& {
-      return out << "Current state:" << std::endl
-                 << "\t" << view_shared() << std::endl
-                 << "\t" << view_local() << std::endl;
+      return out << "Current state:" << std::endl << "\t" << view_shared() << std::endl;
+      //  << "\t" << view_local() << std::endl;
     }};
   }
   auto view_sizes() {

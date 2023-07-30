@@ -44,47 +44,8 @@ struct resource_t {
       return nullptr;
     }
     auto* ptr = pop_first(size);
-    if (ptr != nullptr && ptr->size_p.load() > size) {
-      auto node_idx = get_idx(ptr) + size;
-      auto& leftover = create(node_idx, ptr->size_p.load() - size);
-      insert(leftover);
-    }
     cleanup();
     return reinterpret_cast<T*>(ptr);
-  }
-
-  auto reallocate(const T* ptr, std::size_t old_size, std::size_t new_size) -> T* {
-    INTERPROCESS_LOG_DEBUG("reallocate %p: %zu -> %zu\n", reinterpret_cast<const void*>(ptr),
-                           old_size, new_size);
-    if (ptr == nullptr || old_size == 0) {
-      return allocate(new_size);
-    }
-    if (new_size == 0) {
-      deallocate(ptr, old_size);
-      return nullptr;
-    }
-    if (old_size == new_size) {
-      return ptr;
-    }
-    if (old_size > new_size) {
-      auto node_idx = get_idx(ptr) + new_size;
-      auto& leftover = create(node_idx, old_size - new_size);
-      insert(leftover);
-      cleanup();
-      return ptr;
-    }
-    auto* new_ptr = pop_first(new_size);
-    if (new_ptr != nullptr && ptr->size.load() > new_size) {
-      auto node_idx = get_idx(ptr) + new_size;
-      auto& leftover = create(node_idx, ptr->size.load() - new_size);
-      insert(leftover);
-      memcpy(new_ptr, ptr, sizeof(T) * new_size);
-      node_idx = index_t(reinterpret_cast<const node_t*>(ptr) - head_);
-      auto& new_node = create(node_idx, old_size);
-      insert(new_node);
-    }
-    cleanup();
-    return new_ptr;
   }
 
   void deallocate(const T* ptr, std::size_t size) {
@@ -125,6 +86,60 @@ struct resource_t {
   /** Index of the special last node. It does not exist and must never be visited. */
   constexpr static inline index_t kTerminal = kPtrMask;
 
+  /** Manipulating nodes locally (no thread safety at all). */
+  struct alignas(sizeof(T)) local_node_t {
+    local_node_t* next{nullptr};
+    std::size_t size{0};
+
+    inline void insert(local_node_t* node) {
+      assert(node->size < this->size);
+      auto* self = this;
+      auto* next = self->next;
+      while (next != nullptr && next < node) {
+        self = next;
+        next = self->next;
+      }
+      // Just grow self if it is adjacent to node
+      if (self != this && self + self->size == node) {
+        self->size += node->size;
+        // Check if next can be merged as well
+        if (self + self->size == next) {
+          self->size += next->size;
+          self->next = next->next;
+        }
+        return;
+      }
+      // Check if next can be merged into node
+      if (node + node->size == next) {
+        node->size += next->size;
+        node->next = next->next;
+      } else {
+        node->next = next;
+      }
+      // Insert node after self
+      self->next = node;
+    }
+
+    inline auto pop(std::size_t size) -> void* {
+      auto* self = this;
+      auto* next = self->next;
+      while (next != nullptr && next->size < size) {
+        self = next;
+        next = self->next;
+      }
+      if (next == nullptr) {
+        return nullptr;
+      }
+      auto new_next_size = next->size - size;
+      if (new_next_size == 0) {
+        self->next = next->next;
+      } else {
+        self->next = new (next + size) local_node_t{next->next, new_next_size};
+      }
+      return reinterpret_cast<void*>(next);
+    }
+  };
+
   /*
     All currently available memory is stored in the linked list as defined by node_t.
     All nodes are ordered by their index/pointer.
@@ -154,33 +169,43 @@ struct resource_t {
     /** Number of elements in the node to the left from its idx. */
     std::atomic<index_t> size_n{0};
     /** Shift the node left and set the backup_idx to kTerminal. */
-    [[nodiscard]] auto normalize() -> node_t* {
+    [[nodiscard]] auto to_local() -> local_node_t* {
       auto sn = size_n.load();
-      if (sn > 0) {
-        return new (this - sn) node_t{kTerminal, kTerminal, size_p.load() + sn, 0};
-      } else {
-        backup_idx.store(kTerminal);
-        return this;
-      }
+      auto sp = size_p.load();
+      return new (this - sn) local_node_t{nullptr, sp + sn};
     }
     /** Get the actual size of the node. */
     [[nodiscard]] auto get_size() const -> std::size_t { return size_n.load() + size_p.load(); }
+
+    static inline auto from_local(local_node_t* local) -> node_t* {
+      auto s = local->size;
+      return new (local) node_t{kTerminal, kTerminal, s, 0};
+    }
   };
 
   blob_t blob_;
   node_t* head_{reinterpret_cast<node_t*>(blob_.data())};
-  index_t owned_nodes_{kTerminal};
-  index_t size_{0};
+  /**
+   * Owned nodes:
+   *  next: the head of the list of locally-owned nodes
+   *  size: the total size of the resource as last observed locally by this instance.
+   */
+  local_node_t owned_nodes_{nullptr, 0};
 
   explicit resource_t(blob_t&& blob) noexcept : blob_{std::move(blob)} {}
 
   static_assert(sizeof(T) == sizeof(node_t));
+  static_assert(sizeof(local_node_t) == sizeof(node_t));
   static_assert(std::atomic<index_t>::is_always_lock_free,
                 "This atomic should be lock-free for IPC.");
 
+  // We're writing nodes on top of nodes, not ever destructing anything; hence the check.
+  static_assert(std::is_trivially_destructible_v<node_t>);
+  static_assert(std::is_trivially_destructible_v<local_node_t>);
+
   inline void grow(index_t n) {
-    if (size_ < n) /* unlikely */ {
-      size_ = blob_.grow(n * sizeof(T)) / sizeof(T);
+    if (owned_nodes_.size < n) /* unlikely */ {
+      owned_nodes_.size = blob_.grow(n * sizeof(T)) / sizeof(T);
     }
   }
 
@@ -197,32 +222,6 @@ struct resource_t {
   /** Inits the node in the memory; sets everything except next_idx. */
   inline auto create(index_t index, index_t size) -> node_t& {
     return *(new (get(index)) node_t{kTerminal, kTerminal, size, 0});
-  }
-
-  /** Add the node to the local list of owned nodes (no thread safety). */
-  inline void add_to_owned_list(node_t* node) {
-    node = node->normalize();
-    auto node_idx = get_idx(node);
-    if (node_idx < owned_nodes_) {
-      node->next_idx.store(owned_nodes_);
-      owned_nodes_ = node_idx;
-      return;
-    }
-    auto self = get(owned_nodes_);
-    index_t next_idx = self->next_idx.load();
-    while (next_idx < node_idx) {
-      self = get(next_idx);
-      next_idx = self->next_idx.load();
-    }
-    node->next_idx.store(next_idx);
-    self->next_idx.store(node_idx);
-    // Try to merge adjacent nodes, if any
-    while (self + self->size_p.load() == node) {
-      self->size_p.fetch_add(node->size_p.load());
-      next_idx = node->next_idx.load();
-      self->next_idx.store(next_idx);
-      node = get(next_idx);
-    }
   }
 
   /** Try to increment `self`'s visitor counter and return its new state. */
@@ -273,7 +272,7 @@ struct resource_t {
       } else {
         if (next_idx <= self_idx) {
           // Owning the deleted `self`
-          add_to_owned_list(self);
+          owned_nodes_.insert(self->to_local());
           if (next_idx == self_idx) {
             // The actor is the last visitor to a not-last node in the deleted chain.
             // Need to leave `next` extra time.
@@ -324,33 +323,14 @@ struct resource_t {
     }
   }
 
-  inline auto pop_first_local(std::size_t size) -> node_t* {
-    auto prev_idx = kRoot;
-    auto self_idx = owned_nodes_ & kPtrMask;
-    while (self_idx != kTerminal) {
-      auto* node = get(self_idx);
-      if (node->size_p.load() >= size) {
-        if (prev_idx != kRoot) {
-          get(prev_idx)->next_idx.store(node->next_idx.load());
-        } else {
-          owned_nodes_ = node->next_idx.load();
-        }
-        return node;
-      }
-      prev_idx = self_idx;
-      self_idx = node->next_idx.load() & kPtrMask;
-    }
-    return nullptr;
-  }
-
   /** Get the first node of at least the requested size. */
-  inline auto pop_first(std::size_t size) -> node_t* {
+  inline auto pop_first(std::size_t size) -> void* {
     node_t* self = get(kRoot);
     auto self_val_observed = enter(self);
     node_t* next = nullptr;
     while (true) {
       // Check if the actor has owned a large enough node
-      auto* local = pop_first_local(size);
+      auto* local = owned_nodes_.pop(size);
       if (local != nullptr) {
         leave(self, self_val_observed);
         return local;
@@ -360,8 +340,7 @@ struct resource_t {
         leave(self, self_val_observed);
         auto new_index = get(kRoot)->size_p.fetch_add(size);
         grow(new_index + size);
-        auto* new_node = new (get(new_index)) node_t{kTerminal, kTerminal, size, 0};
-        return new_node;
+        return reinterpret_cast<void*>(get(new_index));
       }
       // Otherwise, continue to look
       // NB: the actor needs to check if this node is deleted and use `backup_idx` accordingly
@@ -374,7 +353,7 @@ struct resource_t {
       while (next_size_n >= size) {
         if (next->size_n.compare_exchange_weak(next_size_n, next_size_n - size)) {
           leave(self, self_val_observed);
-          return new (next - next_size_n) node_t{kTerminal, kTerminal, size, 0};
+          return reinterpret_cast<void*>(next - next_size_n);
         }
       }
       auto next_val_observed = enter(next);
@@ -523,10 +502,10 @@ struct resource_t {
 
   /** Reinsert all locally owned nodes until the list is empty. */
   inline void cleanup() {
-    while (owned_nodes_ != kTerminal) {
-      auto& node = *get(owned_nodes_);
-      owned_nodes_ = node.next_idx.load();
-      insert(node);
+    while (owned_nodes_.next != nullptr) {
+      auto* local = owned_nodes_.next;
+      owned_nodes_.next = local->next;
+      insert(*node_t::from_local(local));
     }
   }
 

@@ -163,6 +163,8 @@ struct resource_t {
         return this;
       }
     }
+    /** Get the actual size of the node. */
+    [[nodiscard]] auto get_size() const -> std::size_t { return size_n.load() + size_p.load(); }
   };
 
   blob_t blob_;

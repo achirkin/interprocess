@@ -48,16 +48,15 @@ struct resource_t {
     return reinterpret_cast<T*>(ptr);
   }
 
-  void deallocate(const T* ptr, std::size_t size) {
+  void deallocate(T* ptr, std::size_t size) {
     if (ptr == nullptr || size == 0) {
       return;
     }
-    auto node_idx = index_t(reinterpret_cast<const node_t*>(ptr) - head_);
-    auto& new_node = create(node_idx, size);
-    insert(new_node);
+    grow(index_t(reinterpret_cast<node_t*>(ptr) - head_) + size);
+    owned_nodes_.insert(new (ptr) local_node_t{nullptr, size});
     cleanup();
-    INTERPROCESS_LOG_DEBUG("deallocate %p: %zu; owned_nodes: %zu\n",
-                           reinterpret_cast<const void*>(ptr), size, owned_nodes_);
+    INTERPROCESS_LOG_DEBUG("deallocate %p: %zu; owned_nodes: %zu\n", reinterpret_cast<void*>(ptr),
+                           size, owned_nodes_);
   }
 
   /** Return an offset of this pointer w.r.t, to the shared memory area. */
@@ -92,7 +91,6 @@ struct resource_t {
     std::size_t size{0};
 
     inline void insert(local_node_t* node) {
-      assert(node->size < this->size);
       auto* self = this;
       auto* next = self->next;
       while (next != nullptr && next < node) {
@@ -107,6 +105,7 @@ struct resource_t {
           self->size += next->size;
           self->next = next->next;
         }
+        this->size = std::max(this->size, self->size);
         return;
       }
       // Check if next can be merged into node
@@ -118,16 +117,23 @@ struct resource_t {
       }
       // Insert node after self
       self->next = node;
+      this->size = std::max(this->size, node->size);
     }
 
     inline auto pop(std::size_t size) -> void* {
+      if (this->size < size) {
+        return nullptr;
+      }
       auto* self = this;
       auto* next = self->next;
+      std::size_t new_size_bound = 0;
       while (next != nullptr && next->size < size) {
         self = next;
         next = self->next;
+        new_size_bound = std::max(new_size_bound, self->size);
       }
       if (next == nullptr) {
+        this->size = new_size_bound;
         return nullptr;
       }
       auto new_next_size = next->size - size;
@@ -186,11 +192,12 @@ struct resource_t {
   blob_t blob_;
   node_t* head_{reinterpret_cast<node_t*>(blob_.data())};
   /**
-   * Owned nodes:
-   *  next: the head of the list of locally-owned nodes
-   *  size: the total size of the resource as last observed locally by this instance.
+   * The first node in the owned list:
+   *  next: the head of the list of locally-owned nodes.
+   *  size: an upper bound on the largest element size in the list.
    */
   local_node_t owned_nodes_{nullptr, 0};
+  index_t observed_blob_size_{0};
 
   explicit resource_t(blob_t&& blob) noexcept : blob_{std::move(blob)} {}
 
@@ -204,8 +211,8 @@ struct resource_t {
   static_assert(std::is_trivially_destructible_v<local_node_t>);
 
   inline void grow(index_t n) {
-    if (owned_nodes_.size < n) /* unlikely */ {
-      owned_nodes_.size = blob_.grow(n * sizeof(T)) / sizeof(T);
+    if (observed_blob_size_ < n) /* unlikely */ {
+      observed_blob_size_ = blob_.grow(n * sizeof(T)) / sizeof(T);
     }
   }
 

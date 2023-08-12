@@ -483,19 +483,21 @@ struct resource_t {
       auto next = get(next_idx);
       auto next_val_observed = enter(next);
       // ------------------ experiment -----------------------------------------------
-      // if ((self_val_observed & kTagMask) == kVisited &&
-      //     self + self->size_p.load() + next->size_n.load() == next) {
-      //   auto self_val_desired = (next_val_observed & kPtrMask) | kVisited;
-      //   if (self->next_idx.compare_exchange_strong(self_val_observed, self_val_desired)) {
-      //     // By calling mark-deleted, the actor effectively transfers the ownership of
-      //     // `self`. step on the next and continue as usual.
-      //     mark_deleted(next, next_val_observed, get_idx(self));
-      //     self = next;
-      //     self_val_observed = next_val_observed;
-      //     continue;
-      //   }
-      // }
-      // // ------------------ experiment -----------------------------------------------
+      // If `self` & `next` are adjacent, remove `next` to merge them afterwards.
+      // (does not seem to change the perf right now, but I can optimize it later)
+      if ((self_val_observed & kTagMask) == kVisited &&
+          self + self->size_p.load() + next->size_n.load() == next) {
+        auto self_val_desired = (next_val_observed & kPtrMask) | kVisited;
+        if (self->next_idx.compare_exchange_strong(self_val_observed, self_val_desired)) {
+          // By calling mark-deleted, the actor effectively transfers the ownership of
+          // `self`. step on the next and continue as usual.
+          mark_deleted(next, next_val_observed, get_idx(self));
+          self = next;
+          self_val_observed = next_val_observed;
+          continue;
+        }
+      }
+      // ------------------ experiment -----------------------------------------------
       leave(self, next_idx);
       self = next;
       self_val_observed = next_val_observed;

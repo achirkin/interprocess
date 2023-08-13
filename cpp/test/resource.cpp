@@ -135,8 +135,6 @@ inline constexpr size_t kSmallN = 7;
 struct chunk_t {
   double a;
   int64_t b;
-  uint64_t c = 0;
-  uint64_t d = 0;
 };
 
 // NOLINTNEXTLINE

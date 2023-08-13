@@ -43,37 +43,61 @@ struct resource_t {
     if (size == 0) {
       return nullptr;
     }
-    auto* ptr = pop_first(size);
+    auto* ptr = pop_first(to_atoms(size));
     cleanup();
     return reinterpret_cast<T*>(ptr);
   }
 
   void deallocate(T* ptr, std::size_t size) {
+    assert((ptr & kAtomMask) == 0);
+    INTERPROCESS_LOG_DEBUG("deallocate %p: %zu\n", ptr, size);
     if (ptr == nullptr || size == 0) {
       return;
     }
+    size = to_atoms(size);
     grow(index_t(reinterpret_cast<node_t*>(ptr) - head_) + size);
     owned_nodes_.insert(new (ptr) local_node_t{nullptr, size});
     cleanup();
-    INTERPROCESS_LOG_DEBUG("deallocate %p: %zu; owned_nodes: %zu\n", reinterpret_cast<void*>(ptr),
-                           size, owned_nodes_);
   }
 
-  /** Return an offset of this pointer w.r.t, to the shared memory area. */
+  /**
+   * Return an offset of this pointer w.r.t, to the shared memory area.
+   *
+   * NB: the offset is measured in internal units, do not rely on it to get
+   *     the pointer to origin.
+   */
   [[nodiscard]] auto get_memory_offset(const T* ptr) const -> std::ptrdiff_t {
-    return ptr - reinterpret_cast<T*>(head_);
+    return reinterpret_cast<const node_t*>(ptr) - head_;
   }
 
-  /** Return an offset of this pointer w.r.t, to the shared memory area. */
+  /** Recover a pointer from the offset returned by `get_memory_offset`. */
   [[nodiscard]] auto from_memory_offset(std::ptrdiff_t diff) -> T* {
     grow(diff + 1);
-    return reinterpret_cast<T*>(head_) + diff;
+    return reinterpret_cast<T*>(head_ + diff);
   }
 
  private:
   using index_t = std::size_t;
 
-  constexpr static inline index_t kTagBits = 4 + sizeof(void*);
+  constexpr static inline std::uint8_t kAtomBits = []() {
+    // The atom must fit `T` but also be at least four words for the `node_t`.
+    auto min_size = std::max(sizeof(T), sizeof(index_t) * 4);
+    // Minimum power-of-two not smaller than `min_size`.
+    return value_bitsize(min_size) - std::uint8_t(is_a_power_of_two(min_size));
+  }();
+  constexpr static inline std::size_t kAtomSize = std::size_t{1} << kAtomBits;
+  constexpr static inline std::size_t kAtomMask = kAtomSize - 1;
+  static_assert(gcd(kAtomSize, alignof(T)) == alignof(T));
+  static_assert(kAtomSize >= sizeof(T));
+
+  static constexpr auto to_atoms(std::size_t elems) -> std::size_t {
+    return (elems * sizeof(T) + kAtomMask) >> kAtomBits;
+  }
+
+  // NB: the more tag bits we have, the more visitors can come to a node concurrently.
+  // Syntactically, it's guaranteed that `kAtomBits` bits are not used by pointers.
+  // This expression goes a little bit further, assuming x64 systems use only 48 bits.
+  constexpr static inline index_t kTagBits = kAtomBits + sizeof(void*) * 2 - 4;
   constexpr static inline index_t kPtrBits = std::numeric_limits<index_t>::digits - kTagBits;
   constexpr static inline index_t kTagMask = ((index_t{1} << kTagBits) - 1) << kPtrBits;
   /** Maximum size of the list. */
@@ -86,7 +110,7 @@ struct resource_t {
   constexpr static inline index_t kTerminal = kPtrMask;
 
   /** Manipulating nodes locally (no thread safety at all). */
-  struct alignas(sizeof(T)) local_node_t {
+  struct alignas(kAtomSize) local_node_t {
     local_node_t* next{nullptr};
     std::size_t size{0};
 
@@ -156,7 +180,7 @@ struct resource_t {
     [Invariant]
       - A connection between a visited node and its next cannot be severed.
    */
-  struct alignas(sizeof(T)) node_t {
+  struct alignas(kAtomSize) node_t {
     /**
      * Pack the visitor counter and an index.
      * In the normal state, it points to the next node, hence `next_idx > self_idx` (assuming no
@@ -201,8 +225,8 @@ struct resource_t {
 
   explicit resource_t(blob_t&& blob) noexcept : blob_{std::move(blob)} {}
 
-  static_assert(sizeof(T) == sizeof(node_t));
-  static_assert(sizeof(local_node_t) == sizeof(node_t));
+  static_assert(sizeof(node_t) == kAtomSize);
+  static_assert(sizeof(local_node_t) == kAtomSize);
   static_assert(std::atomic<index_t>::is_always_lock_free,
                 "This atomic should be lock-free for IPC.");
 
@@ -212,7 +236,7 @@ struct resource_t {
 
   inline void grow(index_t n) {
     if (observed_blob_size_ < n) /* unlikely */ {
-      observed_blob_size_ = blob_.grow(n * sizeof(T)) / sizeof(T);
+      observed_blob_size_ = blob_.grow(n << kAtomBits) >> kAtomBits;
     }
   }
 

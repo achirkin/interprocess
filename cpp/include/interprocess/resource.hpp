@@ -235,7 +235,7 @@ struct resource_t {
   static_assert(std::is_trivially_destructible_v<local_node_t>);
 
   inline void grow(index_t n) {
-    if (observed_blob_size_ < n) /* unlikely */ {
+    if (observed_blob_size_ < n) [[unlikely]] {
       observed_blob_size_ = blob_.grow(n << kAtomBits) >> kAtomBits;
     }
   }

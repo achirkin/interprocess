@@ -49,7 +49,7 @@ struct resource_t {
   }
 
   void deallocate(T* ptr, std::size_t size) {
-    assert((ptr & kAtomMask) == 0);
+    assert((reinterpret_cast<uintptr_t>(ptr) & kAtomMask) == 0);
     INTERPROCESS_LOG_DEBUG("deallocate %p: %zu\n", ptr, size);
     if (ptr == nullptr || size == 0) {
       return;
